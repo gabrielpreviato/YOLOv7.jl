@@ -1,0 +1,9 @@
+name = "YOLOv7"
+uuid = "a9523b4b-60f2-4b05-86a8-33bf953359c5"
+authors = ["Gabriel Previato <gabriel.previato@gmail.com>"]
+version = "0.1.0"
+
+[deps]
+Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
+Images = "916415d5-f1e6-5110-898d-aaa5f9f070e0"
+YAML = "ddb6d928-2868-570f-bddf-ab3f9cf99eb6"
