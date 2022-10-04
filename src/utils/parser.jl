@@ -42,45 +42,87 @@ function parse_yolo(file)
 end
 
 function parse_node(graph, node::Node)
-    node.visited += 1
+    # node.visited += 1
+    to_visit_heap = []
     to_visit = nothing
     node.node = load_node(graph, node)
     actual_chain::Vector{Any} = []
-    if node.node !== nothing
+    if node.node !== nothing 
         actual_chain = [node.node]
     end
+    visited_now = false
 
     if length(node.parents) == 1 || node.op[1] == YOLOBlock{:input}()
         if length(node.children) == 1
             n, to_visit = parse_node(graph, node.children[1])
+            println(node, " ", to_visit)
             push!(actual_chain, n...)
         elseif length(node.children) > 1
             # n = load_node(graph, c.op...)
-            children_chain = []
             for c in node.children
-                n_child, to_visit = parse_node(graph, c)
-                push!(children_chain, n_child)
+                if c.op[1] == YOLOBlock{:Concat}() && c.visited == 0
+                    to_visit = c.children[1]
+                    c.visited = 1
+                    println("Generating visit", to_visit, " ", c.visited)
+                    println(node)
+                    println("end generating")
+                    visited_now = true
+                end
             end
+            children_chain = []
+            child_visit = nothing
+            for c in node.children
+                n_child, new_child_visit = parse_node(graph, c)
+                push!(children_chain, n_child)
+                if new_child_visit !== nothing
+                    child_visit = new_child_visit
+                end
+            end
+            filter!(!isempty, children_chain)
             u = Parallel((x...) -> cat(x...; dims=3), children_chain...)
             push!(actual_chain, u)
 
-            if to_visit !== nothing
-                println("visiring")
-                u = parse_node(graph, to_visit)[1]
-                push!(actual_chain, u)
+            if to_visit === nothing && child_visit !== nothing
+                to_visit = child_visit
             end
+            
         else
         end
     else
         if node.visited == length(node.parents)
             to_visit = node.children[1]
+            println("need to visit")
         # u = parse_node(graph, c)
         #     push!(actual_chain, u)
         #     # println(u)
         end
     end
 
-    return Flux.Chain(actual_chain), to_visit
+    # if to_visit !== nothing
+    #     println("visiting")
+    #         #     parse_node(graph, to_visit)
+    #     u, to_visit = parse_node(graph, to_visit)
+    #     push!(actual_chain, u)
+    #     println(u)
+    #         #     to_visit = nothing
+    #     println("visited")
+    # end
+    if to_visit !== nothing && !visited_now
+        println("visiting")
+        u = parse_node(graph, to_visit)[1]
+        push!(actual_chain, u)
+        println(node)
+        println(node.children)
+        println(u)
+        to_visit = nothing
+        println("visited")
+    end
+
+    if isempty(actual_chain) # || length(actual_chain) == 1
+        return actual_chain, to_visit
+    else
+        return Flux.Chain(actual_chain), to_visit
+    end
 end
 
 function parse_graph(graph::Vector{Node})
@@ -152,10 +194,10 @@ function load_node(chain, ::YOLOBlock{:Concat}, from::Vector{Int}, number::Int, 
 
     dim = 4 - args[1]
 
-    m = Flux.Parallel(x -> cat(x; dims=dim), map(x -> x.node, chain[from])...)
+    # m = Flux.Parallel((x...) -> cat(x...; dims=dim), map(x -> x.node, chain[from])...)
     # println(m)
 
-    return nothing
+    return identity
 end
 
 function load_node(chain, ::YOLOBlock{:MP}, from::Vector{Int}, number::Int, args::Vector{Any})

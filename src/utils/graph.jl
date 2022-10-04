@@ -25,5 +25,5 @@ function Node(children, parents, op)
 end
 
 function Base.show(io::IO, m::Node)
-    print(io, m.op)
+    print(io, m.op, length(m.children))
 end
