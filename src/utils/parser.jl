@@ -57,6 +57,16 @@ function parse_node(graph, root::Node)
         working_layers, type_layer = popfirst!(layers)
 
         if length(graph_node.children) > 1
+            
+            flux_node = load_node(graph, graph_node)
+            push!(working_layers, flux_node)
+            
+            if graph_node.op[1] !== YOLOBlock{:Concat}()
+                pushfirst!(visit_heap, graph_node.children...)
+                pushfirst!(layers, (working_layers, type_layer))
+            else
+            end
+
             new_parallel = ([], "parallel")
             push!(working_layers, new_parallel)
             pushfirst!(layers, new_parallel)
@@ -64,37 +74,46 @@ function parse_node(graph, root::Node)
             # if any(map(x -> x.op[1] == YOLOBlock{:Concat}(), graph_node.children))
             #     push!(new_parallel[1], identity)
             # end
-            for c in graph_node.children
+            for c in reverse(graph_node.children)
                 if c.op[1] == YOLOBlock{:Concat}()
-                    push!(new_parallel[1], identity)
-                # else
-                #     child_chain = ([], "chain")
-                #     push!(new_parallel[1], child_chain)
-                #     pushfirst!(layers, child_chain)
+                    child_chain = (Array{Any}([identity]), "function")
+                    println(typeof(child_chain))
+                    pushfirst!(layers, child_chain)
+                    push!(new_parallel[1], child_chain)
+                else
+                    child_chain = ([], "chain")
+                    push!(new_parallel[1], child_chain)
+                    pushfirst!(layers, child_chain)
                 end
             end
             # pushfirst!(layers, ([], "chain"))
-        elseif length(graph_node.children) == 1
-            if type_layer == "parallel"
-
-            end
-            
-            flux_node = load_node(graph, graph_node)
-            push!(working_layers, flux_node)
-            
-            println(flux_node)
+        elseif length(graph_node.children) <= 1
             
             if graph_node.op[1] !== YOLOBlock{:Concat}()
+                if type_layer == "parallel"
+
+                end
+                
+                flux_node = load_node(graph, graph_node)
+                push!(working_layers, flux_node)
+                
+                println(flux_node)
+                println(working_layers)
+                
                 pushfirst!(visit_heap, graph_node.children...)
                 pushfirst!(layers, (working_layers, type_layer))
             else
                 if length(graph_node.parents) == graph_node.visited
                     pushfirst!(visit_heap, graph_node.children...)
+
+                    parallel_layer, type_layer = popfirst!(layers)
+                    println(parallel_layer, " ", type_layer)
                 end
 
-                previous_layers, previous_type_layer = popfirst!(layers)
-                push!(previous_layers, (working_layers, type_layer))
-                pushfirst!(layers, (previous_layers, previous_type_layer))
+                # pushfirst!(layers, (working_layers, type_layer))
+                # previous_layers, previous_type_layer = popfirst!(layers)
+                # push!(previous_layers, (working_layers, type_layer))
+                # pushfirst!(layers, (previous_layers, previous_type_layer))
             end
         end
     end
@@ -102,12 +121,50 @@ function parse_node(graph, root::Node)
     return layers
 end
 
+function create_chain(layer_tuple::Tuple{Vector{Any}, String})
+    layers, chain_type = layer_tuple
+    if chain_type == "chain"
+        return Flux.Chain(create_chain.(layers))
+    elseif chain_type == "parallel"
+        return Flux.Parallel((x...) -> cat(x...; dims=3), create_chain.(layers)...)
+    elseif chain_type == "function"
+        return layers
+    end
+end
+
+function create_chain(layer_tuple::Tuple{Function, String})
+    layers, chain_type = layer_tuple
+    println(layers)
+    println("/////")
+    return layers
+    # if chain_type == "identity"
+    #     return Flux.Chain(create_chain.(layers))
+    # elseif chain_type == "parallel"
+    #     return Flux.Parallel(create_chain.(layers)...)
+    # end
+end
+
+function create_chain(layer_tuple::Array)
+    println("call")
+    return create_chain.(layer_tuple)
+end
+
+function create_chain(layer_tuple::Union{Conv, MaxPool, Function})
+    return layer_tuple
+end
+
 function parse_graph(graph::Vector{Node})
     layers = []  
     
     s::Node = graph[1]
 
-    parse_node(graph, s)
+    layers = parse_node(graph, s)
+
+    println("-------")
+    println(length(layers))
+
+    model = create_chain(layers[end])
+    return model, layers
 
     # n = load_node(graph, s.op...)
     # explore = [n]
