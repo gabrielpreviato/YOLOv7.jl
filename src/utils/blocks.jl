@@ -26,7 +26,7 @@ Flux.trainable(m::YOLOChain) = (m.components,)
 function YOLOChain(nodes::Vector{Node}, components::Vector{Any})
     results = []
     x = randn(Float32, 640, 640, 3, 1)
-    for (node, component) in zip(m.nodes, m.components)
+    for (node, component) in zip(nodes, components)
         if length(node.parents) == 0
             push!(results, x)
         else
