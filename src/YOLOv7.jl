@@ -1,8 +1,9 @@
 module YOLOv7
 
-include("utils/blocks.jl")
+include("utils/activations.jl")
 include("utils/graph.jl")
-
+include("utils/blocks.jl")
+include("utils/parser.jl")
 # export YOLOChain
 
 println("Done!")
