@@ -48,26 +48,36 @@ Base.getindex(c::YOLOChain, i::UnitRange{Int64}) = YOLOChain(c.nodes[i], c.compo
 
 (m::YOLOChain)(x::AbstractArray) = _apply_chain(m, x)
 
+function _chain(m, node, component, x::AbstractArray)
+    println(node)
+    if length(node.parents) == 0
+        return x
+    end
+
+    return component([_chain(m, m.nodes[i], m.components[i], x) for i in node.op[2]]...)
+    # return _chain(m, m.nodes[i], m.components[i], component(x))
+end
+
 function _apply_chain(m::YOLOChain, x::AbstractArray)
-    results = []
     # fs = m.nodes[1]
     # cs = m.components[1]
     # push!(results, cs(x))
+    return _chain(m, m.nodes[end], m.components[end], x)
 
-    for (node, component) in zip(m.nodes, m.components)
-        if length(node.parents) == 0
-            push!(results, x)
-        else
-            # println(node)
-            # println(component)
-            # println(node.op[2])
-            # println(size(results[node.op[2][1]]))
-            push!(results, component(results[node.op[2]]...))
-        end
-        # println(length(results))
-    end
+    # for (i, (node, component)) in enumerate(zip(m.nodes, m.components))
+    #     if length(node.parents) == 0
+    #         m.results[i] = x
+    #     else
+    #         # println(node)
+    #         # println(component)
+    #         # println(node.op[2])
+    #         # println(size(results[node.op[2][1]]))
+    #         m.results[i] = component(m.results[node.op[2]]...)
+    #     end
+    #     # println(length(results))
+    # end
 
-    return results[end]
+    # return m.results[end]
 end
 
 struct Conv

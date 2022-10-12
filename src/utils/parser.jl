@@ -353,9 +353,4 @@ function load_model()
     m = YOLOChain(l, b)
 end
 
-# X = rand(Float32, 640, 640, 3, 100)
-# Y = rand(0:9, 100)
-# data = Flux.DataLoader((X, Y), batchsize=8) 
-# loss(x, y) = Flux.Losses.mse(m(x), y)
-# ps = Flux.params(m)
-# opt = Flux.Adam(0.001, (0.9, 0.8))
+
