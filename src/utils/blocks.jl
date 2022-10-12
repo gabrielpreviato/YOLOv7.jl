@@ -36,8 +36,8 @@ function _apply_chain(m::YOLOChain, x::AbstractArray)
         if length(node.parents) == 0
             push!(results, x)
         else
-            println(node)
-            println(component)
+            # println(node)
+            # println(component)
             # println(node.op[2])
             # println(size(results[node.op[2][1]]))
             push!(results, component(results[node.op[2]]...))
