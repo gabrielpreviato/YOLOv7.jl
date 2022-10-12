@@ -16,9 +16,31 @@ Flux.@functor Split
 struct YOLOChain
     nodes::Vector{Node}
     components::Vector{Any}
+    results::Vector{AbstractArray}
 end
 
 Flux.@functor YOLOChain
+
+Flux.trainable(m::YOLOChain) = (m.components,)
+
+function YOLOChain(nodes::Vector{Node}, components::Vector{Any})
+    results = []
+    x = randn(Float32, 640, 640, 3, 1)
+    for (node, component) in zip(m.nodes, m.components)
+        if length(node.parents) == 0
+            push!(results, x)
+        else
+            # println(node)
+            # println(component)
+            # println(node.op[2])
+            # println(size(results[node.op[2][1]]))
+            push!(results, component(results[node.op[2]]...))
+        end
+        # println(length(results))
+    end
+
+    return YOLOChain(nodes, components, results)
+end
 
 Base.getindex(c::YOLOChain, i::Int64) = YOLOChain(c.nodes[i], c.components[i])
 
