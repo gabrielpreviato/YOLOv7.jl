@@ -1,8 +1,8 @@
 struct YOLOBlock{Block} end
 
-mutable struct Node
+struct Node
     children::Vector
-    parents::Vector
+    parents::Union{Node,Vector}
     op::Any
     ch_out::Union{Int}
     node::Any
@@ -16,6 +16,9 @@ function Node(children, parents, op)
     println(op[1])
     if op[1] == YOLOBlock{:Upsample}()
         println("in if")
+        if typeof(parents) === YOLOv7.Node
+            parents = [parents]
+        end
         ch_out = sum(x -> x.ch_out, parents; init=0)
     elseif op[1] == YOLOBlock{:SPPCSPC}()
         ch_out = args[1]
@@ -23,6 +26,10 @@ function Node(children, parents, op)
         if length(args) == 3
             ch_out = args[1]
         else
+            if typeof(parents) === YOLOv7.Node
+                parents = [parents]
+            end
+
             if length(parents) > 0
                 println(parents)
                 ch_out = sum(x -> x.ch_out, parents)
@@ -31,6 +38,12 @@ function Node(children, parents, op)
             end
         end
     end
+
+    if length(children) == 1
+        children = [children]
+    end
+
+    println(typeof(children), children)
 
     return Node(children, parents, op, ch_out, nothing, 0)
 end

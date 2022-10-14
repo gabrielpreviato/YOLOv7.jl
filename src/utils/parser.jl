@@ -9,7 +9,7 @@ function parse_yolo(file)
     yolo_yaml = YAML.load_file(file; dicttype=Dict{Symbol,Any})
 
     # chain = YOLOChain([3], Vector{Any}([[]]))
-    root = Node([], [], (YOLOBlock{:input}(), [0], 1, []), 3, nothing, 0)
+    root = Node([], [], (YOLOBlock{:input}(), [], 1, []), 3, nothing, 0)
     node_list = [root]
     for node in [yolo_yaml[:backbone]; yolo_yaml[:head]]
         
@@ -21,6 +21,10 @@ function parse_yolo(file)
                 from = length(node_list) + from + 1
             end
             from = [from]
+        end
+
+        if length(from) == 1
+            from = from[1]
         end
 
         number = node[2]
@@ -233,19 +237,19 @@ end
 
 load_node(chain, node::Node) = load_node(chain, node.op...)
 
-function load_node(chain, ::YOLOBlock{:input}, from::Vector{Int}, number::Int, args::Vector)
+function load_node(chain, ::YOLOBlock{:input}, from::Vector{Any}, number::Int, args::Vector)
     # return chain[1]
     return nothing
 end
 
-function load_node(chain, ::YOLOBlock{:Conv}, from::Vector{Int}, number::Int, args::Vector{Int})
+function load_node(chain, ::YOLOBlock{:Conv}, from::Int, number::Int, args::Vector{Int})
     if length(args) <= 3
         activation = silu
     elseif length(args) == 4
         activation = args[4]
     end
     # Julia does not allow negative index
-    ch_in = chain[from][1].ch_out
+    ch_in = chain[from].ch_out
 
     ch_out = args[1]
     filter = args[2]
@@ -280,7 +284,7 @@ function load_node(chain, ::YOLOBlock{:Concat}, from::Vector{Int}, number::Int, 
     return (x...) -> cat(x...; dims=dim)
 end
 
-function load_node(chain, ::YOLOBlock{:MP}, from::Vector{Int}, number::Int, args::Vector{Any})
+function load_node(chain, ::YOLOBlock{:MP}, from::Int, number::Int, args::Vector{Any})
     if length(args) == 0
         window = (2, 2)
     end
@@ -296,8 +300,8 @@ function load_node(chain, ::YOLOBlock{:MP}, from::Vector{Int}, number::Int, args
     return m
 end
 
-function load_node(chain, ::YOLOBlock{:SPPCSPC}, from::Vector{Int}, number::Int, args::Vector{Int64})
-    ch_in = chain[from][1].ch_out
+function load_node(chain, ::YOLOBlock{:SPPCSPC}, from::Int, number::Int, args::Vector{Int64})
+    ch_in = chain[from].ch_out
     ch_out = args[1]
     
     m = SPPCSPC(ch_in, ch_out)
@@ -305,7 +309,7 @@ function load_node(chain, ::YOLOBlock{:SPPCSPC}, from::Vector{Int}, number::Int,
     return m
 end
 
-function load_node(chain, ::YOLOBlock{:Flatten}, from::Vector{Int}, number::Int, args::Vector{Any})
+function load_node(chain, ::YOLOBlock{:Flatten}, from::Int, number::Int, args::Vector{Any})
     # ch_in = chain[from][1].ch_out
     # ch_out = args[1]
     
@@ -314,7 +318,7 @@ function load_node(chain, ::YOLOBlock{:Flatten}, from::Vector{Int}, number::Int,
     return m
 end
 
-function load_node(chain, ::YOLOBlock{:Upsample}, from::Vector{Int}, number::Int, args::Vector{Any})
+function load_node(chain, ::YOLOBlock{:Upsample}, from::Int, number::Int, args::Vector{Any})
     scale = args[2]
     mode = Symbol(args[3])
     
@@ -323,7 +327,7 @@ function load_node(chain, ::YOLOBlock{:Upsample}, from::Vector{Int}, number::Int
     return m
 end
 
-function load_node(chain, ::YOLOBlock{:Dense}, from::Vector{Int}, number::Int, args::Union{Vector{Any}, Vector{Int}})
+function load_node(chain, ::YOLOBlock{:Dense}, from::Int, number::Int, args::Union{Vector{Any}, Vector{Int}})
     ch_in = args[1]
     ch_out = args[2]
 
@@ -350,7 +354,7 @@ function load_model()
         push!(b, load_node(l, i.op...))
     end
 
-    m = YOLOChain(l, b)
+    m = YOLOChain(l[2:end], b[2:end])
 end
 
 
