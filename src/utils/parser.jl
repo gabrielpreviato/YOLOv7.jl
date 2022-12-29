@@ -1,7 +1,7 @@
 using YAML
 using Flux
 
-using YOLOv7: Node, Split, YOLOChain, SPPCSPC, silu, YOLOBlock
+# using YOLOv7: Node, Split, YOLOChain, SPPCSPC, silu, YOLOBlock
 
 using YOLOv7
 
@@ -337,6 +337,10 @@ function load_node(chain, ::YOLOBlock{:Dense}, from::Int, number::Int, args::Uni
             activation = Flux.sigmoid
         elseif activation == "relu"
             activation = Flux.relu
+        elseif activation == "norm_sigmoid"
+            activation = norm_sigmoid
+        elseif activation == "softsign"
+            activation = NNlib.softsign
         end
     else
         activation = identity
@@ -347,14 +351,17 @@ function load_node(chain, ::YOLOBlock{:Dense}, from::Int, number::Int, args::Uni
     return m
 end
 
-function load_model()
-    l = parse_yolo(raw"C:\Users\Previato\YOLOv7.jl\src\conf\yolov7.yaml")
+function load_model(file)
+    l = parse_yolo(file)
     b = []
     for i in l
         push!(b, load_node(l, i.op...))
     end
-
+    println("Loading model:")
     m = YOLOChain(l[2:end], b[2:end])
+    println("Model loaded!")
+
+    return m
 end
 
 

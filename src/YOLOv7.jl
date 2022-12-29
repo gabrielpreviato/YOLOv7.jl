@@ -6,5 +6,5 @@ include("utils/blocks.jl")
 include("utils/parser.jl")
 # export YOLOChain
 
-println("Done!")
+println("Imported YOLOv7")
 end # module
