@@ -46,120 +46,6 @@ function parse_yolo(file)
     return node_list
 end
 
-function parse_node(graph, root::Node)
-    visit_heap::Array{Node} = [root.children[1]]
-    layers::Array{Any} = [([], "chain")]
-
-    while !isempty(visit_heap)
-        graph_node = popfirst!(visit_heap)
-        graph_node.visited += 1
-        if graph_node.visited != length(graph_node.parents)
-            # continue
-        end
-
-
-        println(graph_node)
-
-
-        if length(graph_node.children) > 1
-            popped_out = popfirst!(layers)
-            working_layers, type_layer = popped_out           
-            
-            flux_node = load_node(graph, graph_node)
-            push!(working_layers, flux_node)
-            
-            if graph_node.op[1] !== YOLOBlock{:Concat}()
-                pushfirst!(visit_heap, graph_node.children...)
-                pushfirst!(layers, (working_layers, type_layer))
-            else
-                pushfirst!(visit_heap, graph_node.children...)
-                # pushfirst!(layers, (working_layers, type_layer))
-            end
-
-            new_parallel = ([], "parallel")
-            push!(working_layers, new_parallel)
-            pushfirst!(layers, new_parallel)
-
-            # if any(map(x -> x.op[1] == YOLOBlock{:Concat}(), graph_node.children))
-            #     push!(new_parallel[1], identity)
-            # end
-            for c in reverse(graph_node.children)
-                if c.op[1] == YOLOBlock{:Concat}()
-                    child_chain = (Array{Any}([identity]), "function")
-                    println(typeof(child_chain))
-                    # pushfirst!(layers, child_chain)
-                    push!(new_parallel[1], child_chain)
-                else
-                    child_chain = ([], "chain")
-                    push!(new_parallel[1], child_chain)
-                    pushfirst!(layers, child_chain)
-                end
-            end
-            # pushfirst!(layers, ([], "chain"))
-        elseif length(graph_node.children) <= 1
-            
-            if graph_node.op[1] !== YOLOBlock{:Concat}()
-                popped_out = popfirst!(layers)
-                working_layers, type_layer = popped_out           
-                
-                if type_layer == "parallel"
-
-                end
-                
-                flux_node = load_node(graph, graph_node)
-                push!(working_layers, flux_node)
-                
-                # println(flux_node)
-                # println(working_layers)
-                
-                pushfirst!(visit_heap, graph_node.children...)
-                pushfirst!(layers, popped_out)
-            else
-                if length(graph_node.parents) == graph_node.visited
-                    popped_out = popfirst!(layers)
-                    working_layers, type_layer = popped_out           
-                    
-                    pushfirst!(visit_heap, graph_node.children...)
-
-                    
-                    if length(layers) == 3
-                        parallel_layer, type_layer = popfirst!(layers)
-                        parallel_layer, type_layer = popfirst!(layers)
-                    end
-                    if length(layers) == 2
-                        parallel_layer, type_layer = popfirst!(layers)
-                        # parallel_layer, type_layer = popfirst!(layers)
-                    end
-                    println("Finished concat")
-                    
-                else
-                    popped_out = popfirst!(layers)
-                    working_layers, type_layer = popped_out
-                    println(type_layer)    
-                    println(working_layers)
-                    if type_layer == "chain" && working_layers == []
-                        pushfirst!(layers, popped_out)
-                    end
-                end
-
-                # pushfirst!(layers, (working_layers, type_layer))
-                # previous_layers, previous_type_layer = popfirst!(layers)
-                # push!(previous_layers, (working_layers, type_layer))
-                # pushfirst!(layers, (previous_layers, previous_type_layer))
-            end
-
-            if length(graph_node.children) == 1
-                if graph_node.children[1].op[1] == YOLOBlock{:Concat}() 
-                    println("here")
-                    popfirst!(layers)
-                end
-            end
-        end
-    end
-
-    return layers
-end
-
 function create_chain(layer_tuple::Tuple{Vector{Any}, String})
     layers, chain_type = layer_tuple
     if chain_type == "chain"
@@ -196,45 +82,6 @@ function create_chain(layer_tuple::Union{Conv, MaxPool, Function})
     return layer_tuple
 end
 
-function parse_graph(graph::Vector{Node})
-    layers = []  
-    
-    s::Node = graph[1]
-
-    layers = parse_node(graph, s)
-
-    println("-------")
-    println(length(layers))
-
-    model = create_chain(layers[end])
-    return model, layers
-
-    # n = load_node(graph, s.op...)
-    # explore = [n]
-    # actual_chain = []
-    # while !isempty(explore)
-    #     u = pop!(explore)
-    #     println(u)
-    #     push!(actual_chain, u)
-
-    #     if length(u.children) > 1
-    #         children_chains, next = parse_children(graph, u)
-    #         u = Split(children_chains)
-    #         push!(actual_chain, u)
-            
-    #         push!(layers, actual_chain)
-    #         actual_chain = []
-    #     else
-    #         next = u.children[1]
-    #     end
-
-    #     push!(explore, next)
-    # end
-
-    # push!(layers, actual_chain)
-    # println(layers)
-end
-
 load_node(chain, node::Node) = load_node(chain, node.op...)
 
 function load_node(chain, ::YOLOBlock{:input}, from::Vector{Any}, number::Int, args::Vector)
@@ -268,6 +115,22 @@ function load_node(chain, ::YOLOBlock{:Conv}, from::Int, number::Int, args::Vect
     m = YOLOv7.Conv(conv, bn, act)
 
     # push!(chain.m, m)
+
+    return m
+end
+
+function load_node(chain, ::YOLOBlock{:RepConv}, from::Int, number::Int, args::Vector{Int})
+    ch_in = chain[from].ch_out
+
+    ch_out = args[1]
+    filter = args[2]
+    stride = args[3]
+
+    if length(filter) == 1
+        filter = (filter, filter)
+    end
+
+    m = YOLOv7.RepConv(ch_in, ch_out; k=filter, s=stride)
 
     return m
 end

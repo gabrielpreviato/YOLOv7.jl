@@ -1,4 +1,6 @@
 using Flux
+using CUDA
+using Distributions, Random
 
 using YOLOv7: Node
 
@@ -736,7 +738,86 @@ function(m::YOLOv7HeadTailRepConv)(x::Dict)
     xrepc2 = m.repc2(x[m.routeback2])
     xrepc3 = m.repc3(x[m.routeback3])
 
-    return xrepc1, xrepc2, xrepc3
+    return [xrepc1, xrepc2, xrepc3]
 end
 
 Flux.@functor YOLOv7HeadTailRepConv (repc1, repc2, repc3,)
+
+struct ImplicitAddition
+    w::AbstractArray{Float32,4}
+end
+
+function ImplicitAddition(depth::Int; mean=0.0, std=0.02)
+    d = Normal(mean, std)
+    w = Float32.(rand(d, 1, 1, depth, 1))
+
+    return ImplicitAddition(w)
+end
+
+function (m::ImplicitAddition)(x::AbstractArray)
+    return m.w .+ x
+end
+
+Flux.@functor ImplicitAddition (w,)
+
+struct ImplicitMultiplication
+    w::AbstractArray{Float32,4}
+end
+
+function ImplicitMultiplication(depth::Int; mean=0.0, std=0.02)
+    d = Normal(mean, std)
+    w = Float32.(rand(d, 1, 1, depth, 1))
+
+    return ImplicitMultiplication(w)
+end
+
+function (m::ImplicitMultiplication)(x::AbstractArray)
+    return m.w .* x
+end
+
+Flux.@functor ImplicitMultiplication (w,)
+
+struct IDetec
+    classes::Int
+    outputs::Int
+    detec_layers::Int
+    n_anchors::Int
+    out_conv::Tuple{Vararg{Flux.Conv}}
+    ia::Tuple{Vararg{ImplicitAddition}}
+    im::Tuple{Vararg{ImplicitMultiplication}}
+    anchors::Tuple
+end
+
+function IDetec(classes::Int; anchors::Tuple=(), channels::Tuple{Vararg{Int}}=())
+    outputs = classes + 5
+    detec_layers = length(anchors)
+    n_anchors = length(anchors[1]) ÷ 2
+
+    init_grid = [Flux.zeros32(1) for _ in 1:detec_layers]
+    out_conv = Tuple([Flux.Conv((1, 1), ch => outputs * n_anchors) for ch in channels])
+
+    ia = Tuple([ImplicitAddition(ch) for ch in channels])
+    im = Tuple([ImplicitMultiplication(outputs * n_anchors) for _ in channels])
+
+    return IDetec(classes, outputs, detec_layers, n_anchors, out_conv, ia, im, anchors)
+end
+
+function (m::IDetec)(x::AbstractArray)
+    # z = []
+    println(size(x))
+    y = [CUDA.zeros(1, 1, 1, 1, 1), CUDA.zeros(1, 1, 1, 1, 1), CUDA.zeros(1, 1, 1, 1, 1)]
+    println(size(y))
+    for i in 1:m.detec_layers
+        x[i] = m.out_conv[i](m.ia[i](x[i]))
+        x[i] = m.im[i](x[i])
+
+        nx, ny, _, bs = size(x[i])
+        println((nx, ny, m.outputs, m.n_anchors, bs))
+        println(size(x[i]))
+        y[i] = permutedims(reshape(x[i], (nx, ny, m.outputs, m.n_anchors, bs)), (3, 1, 2, 4, 5))
+    end
+
+    return y
+end
+
+Flux.@functor IDetec (out_conv, ia, im,)
