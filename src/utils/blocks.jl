@@ -1,4 +1,6 @@
 using Flux
+using Zygote
+using ONNX
 using CUDA
 using Distributions, Random
 
@@ -386,7 +388,7 @@ struct SPPCSPC
 end
 
 # CSP https://github.com/WongKinYiu/CrossStagePartialNetworks
-function SPPCSPC(c1, c2; n=1, shortcut=false, g=1, e=0.5, k=(5, 9, 13))
+function SPPCSPC(c1, c2; n=1, shortcut=false, groups=1, e=0.5, k=(5, 9, 13))
         c_ = Int(2 * c2 * e)  # hidden channels
         cv1 = Conv(Flux.Conv((1, 1), c1 => c_; stride=1, pad=Flux.SamePad()), Flux.BatchNorm(c_))
         cv2 = Conv(Flux.Conv((1, 1), c1 => c_; stride=1, pad=Flux.SamePad()), Flux.BatchNorm(c_))
@@ -398,6 +400,30 @@ function SPPCSPC(c1, c2; n=1, shortcut=false, g=1, e=0.5, k=(5, 9, 13))
         cv7 = Conv(Flux.Conv((1, 1), 2 * c_ => c2; stride=1, pad=Flux.SamePad()), Flux.BatchNorm(c2))
 
         return SPPCSPC(cv1, cv2, cv3, cv4, m, cv5, cv6, cv7)
+end
+
+function SPPCSPC(c1, c2; g::ONNX.Types.Graph, pretrained::Bool, n=1, shortcut=false, groups=1, e=0.5, k=(5, 9, 13))
+    if !pretrained
+        return SPPCSPC(c1, c2, n=n, shortcut=shortcut, groups=groups, e=e, k=k)
+    end
+    
+    ws = [
+        g.initializer["model.model.51.cv$(i).conv.weight"]
+    for i in 1:7]
+    bs = [
+        g.initializer["model.model.51.cv$(i).conv.bias"]
+    for i in 1:7]
+
+    cs = [
+        Conv(
+            Flux.Conv(w, b; stride=1, pad=SamePad()),
+            Flux.BatchNorm(size(w)[end])
+        )
+    for (w, b) in zip(ws, bs)]
+
+    m = [Flux.MaxPool((x, x); stride=1, pad=x÷2) for x in k]
+
+    return SPPCSPC(cs[1:4]..., m, cs[5:end]...)
 end
 
 function (m::SPPCSPC)(x::AbstractArray)
@@ -425,7 +451,7 @@ struct RepConv
     act::Function
 end
 
-function RepConv(c1, c2; k=3, s=1, p=nothing, g=1, act=true)
+function RepConv(c1, c2; k=3, s=1, p=nothing, groups=1, act=true)
     # groups = g
     # ch_in = c1
     # ch_out = c2
@@ -434,12 +460,31 @@ function RepConv(c1, c2; k=3, s=1, p=nothing, g=1, act=true)
 
     rbr_identity = c1 == c2 && s == 1 ? BatchNorm(c1) : nothing
     rbr_dense = Chain(
-        Flux.Conv((k, k), c1 => c2; stride=s, pad=SamePad(), groups=g, bias=false),
+        Flux.Conv((k, k), c1 => c2; stride=s, pad=SamePad(), groups=groups, bias=false),
         BatchNorm(c2)
     )
     rbr_1x1 = Chain(
-        Flux.Conv((1, 1), c1 => c2; stride=s, pad=0, groups=g, bias=false),
+        Flux.Conv((1, 1), c1 => c2; stride=s, pad=0, groups=groups, bias=false),
         BatchNorm(c2)
+    )
+
+    return RepConv(rbr_identity, rbr_dense, rbr_1x1, activation)
+end
+
+function RepConv(w, b)
+    # groups = g
+    # ch_in = c1
+    # ch_out = c2
+    activation = silu
+
+    rbr_identity = nothing
+    rbr_dense = Chain(
+        Flux.Conv(w[1], b[1]; stride=1, pad=SamePad()),
+        BatchNorm(size(w[1])[end])
+    )
+    rbr_1x1 = Chain(
+        Flux.Conv(w[2], b[2]; stride=1, pad=SamePad()),
+        BatchNorm(size(w[2])[end])
     )
 
     return RepConv(rbr_identity, rbr_dense, rbr_1x1, activation)
@@ -451,9 +496,9 @@ function (m::RepConv)(x::AbstractArray)
         id_out = m.rbr_identity(x)
     end
 
-    println(size(m.rbr_dense(x)))
-    println(size(m.rbr_1x1(x)))
-    println(size(id_out))
+    # println(size(m.rbr_dense(x)))
+    # println(size(m.rbr_1x1(x)))
+    # println(size(id_out))
 
     return m.act(m.rbr_dense(x) .+ m.rbr_1x1(x) .+ id_out)
 end
@@ -504,6 +549,35 @@ function YOLOv7BackboneBlock(depth::Int64; half_cut=false, start_mp=true)
     return YOLOv7BackboneBlock(depth, mp, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10)
 end
 
+function YOLOv7BackboneBlock(depth::Int64; g::ONNX.Types.Graph, pretrained::Bool, off=0, half_cut=false, start_mp=true)
+    if !pretrained
+        return YOLOv7BackboneBlock(depth, half_cut=half_cut, start_mp=start_mp)
+    else
+        stride = [1, 1, 2, 1, 1, 1, 1, 1, 1, 1]
+        ws = [
+            g.initializer["model.model.$(i + off).conv.weight"]
+        for i in filter(x -> x != 16 && x != 23, 13:24)]
+        bs = [
+            g.initializer["model.model.$(i + off).conv.bias"]
+        for i in filter(x -> x != 16 && x != 23, 13:24)]
+   
+        cs = [
+            Conv(
+                Flux.Conv(w, b; stride=s, pad=SamePad()),
+                Flux.BatchNorm(size(w)[end])
+            )
+        for (w, b, s) in zip(ws, bs, stride)]
+    end
+    
+    if start_mp
+        mp = MaxPool((2, 2))
+    else
+        mp = MaxPool((1, 1))
+    end
+
+    return YOLOv7BackboneBlock(depth, mp, cs...)
+end
+
 function(m::YOLOv7BackboneBlock)(x::AbstractArray)
     xc1 = m.c1(m.mp(x))
     xc3 = m.c3(m.c2(x))
@@ -545,6 +619,29 @@ function YOLOv7BackboneInit(depth::Int64)
     return YOLOv7BackboneInit(depth, c1, c2, c3, c4, c5, c6, c7, c8)
 end
 
+function YOLOv7BackboneInit(depth::Int64; g::ONNX.Types.Graph, pretrained::Bool)
+    if !pretrained
+        return YOLOv7BackboneInit(depth)
+    else
+        stride = [2, 1, 1, 1, 1, 1, 1, 1]
+        ws = [
+            g.initializer["model.model.$(i).conv.weight"]
+        for i in filter(x -> x != 10, 3:11)]
+        bs = [
+            g.initializer["model.model.$(i).conv.bias"]
+        for i in filter(x -> x != 10, 3:11)]
+   
+        cs = [
+            Conv(
+                Flux.Conv(w, b; stride=s, pad=SamePad()),
+                Flux.BatchNorm(size(w)[end])
+            )
+        for (w, b, s) in zip(ws, bs, stride)]
+    end
+
+    return YOLOv7BackboneInit(depth, cs...)
+end
+
 function(m::YOLOv7BackboneInit)(x::AbstractArray)
     xc1 = m.c1(x)
     xc2 = m.c2(xc1)
@@ -571,17 +668,36 @@ struct YOLOv7Backbone
     p4::Bool
 end
 
-function YOLOv7Backbone(; mps::Array{Bool, 1}=[true, true, true], p3=false, p4=false)
-    c1 = Conv(3 => 32, 3, 1)
-    c2 = Conv(32 => 64, 3, 2)
-    c3 = Conv(64 => 64, 3, 1)
+function YOLOv7Backbone(; mps::Array{Bool, 1}=[true, true, true], p3=false, p4=false, g::ONNX.Types.Graph, pretrained::Bool)
+    if pretrained
+        stride = [1, 2, 1]
+        ws = [
+            g.initializer["model.model.$(i).conv.weight"]
+        for i in 0:2]
+        bs = [
+            g.initializer["model.model.$(i).conv.bias"]
+        for i in 0:2]
+   
+        cs = [
+            Conv(
+                Flux.Conv(w, b; stride=s, pad=SamePad()),
+                Flux.BatchNorm(size(w)[end])
+            )
+        for (w, b, s) in zip(ws, bs, stride)]
+    else
+        cs = [
+            Conv(3 => 32, 3, 1)
+            Conv(32 => 64, 3, 2)
+            Conv(64 => 64, 3, 1)
+        ]
+    end
 
-    ybi = YOLOv7BackboneInit(64)
-    ybb1 = YOLOv7BackboneBlock(128; start_mp=mps[1])
-    ybb2 = YOLOv7BackboneBlock(256; start_mp=mps[2])
-    ybb3 = YOLOv7BackboneBlock(512; half_cut=true,  start_mp=mps[3])
+    ybi = YOLOv7BackboneInit(64; g=g, pretrained=pretrained)
+    ybb1 = YOLOv7BackboneBlock(128; g=g, pretrained=pretrained, off=0, start_mp=mps[1])
+    ybb2 = YOLOv7BackboneBlock(256; g=g, pretrained=pretrained, off=13, start_mp=mps[2])
+    ybb3 = YOLOv7BackboneBlock(512; g=g, pretrained=pretrained, off=26, half_cut=true, start_mp=mps[3])
 
-    return YOLOv7Backbone(c1, c2, c3, ybi, ybb1, ybb2, ybb3, p3, p4)
+    return YOLOv7Backbone(cs..., ybi, ybb1, ybb2, ybb3, p3, p4)
 end
 
 function(m::YOLOv7Backbone)(x::AbstractArray)
@@ -619,6 +735,29 @@ function YOLOv7HeadRouteback(depth::Int, routeback::Symbol)
     return YOLOv7HeadRouteback(depth, c1, up, cback, routeback)
 end
 
+function YOLOv7HeadRouteback(depth::Int, routeback::Symbol; g::ONNX.Types.Graph, pretrained::Bool, off=0)
+    if !pretrained
+        return YOLOv7HeadRouteback(depth, routeback)
+    end
+    
+    ws = [
+        g.initializer["model.model.$(i + off).conv.weight"]
+    for i in [52, 54]]
+    bs = [
+        g.initializer["model.model.$(i + off).conv.bias"]
+    for i in [52, 54]]
+
+    cs = [
+        Conv(
+            Flux.Conv(w, b; stride=1, pad=SamePad()),
+            Flux.BatchNorm(size(w)[end])
+        )
+    for (w, b) in zip(ws, bs)]
+    up = Upsample(2, :nearest)
+
+    return YOLOv7HeadRouteback(depth, cs[1], up, cs[2], routeback)
+end
+
 function(m::YOLOv7HeadRouteback)(x::Dict)
     xup = m.up(m.c1(x[:x]))
     xrb = m.cback(x[m.routeback])
@@ -654,6 +793,28 @@ function YOLOv7HeadBlock(depth::Int64, name::Symbol) # 256
     c7 = Conv(4*half_depth + 2*depth => depth, 1, 1)
 
     return YOLOv7HeadBlock(depth, name, c1, c2, c3, c4, c5, c6, c7)
+end
+
+function YOLOv7HeadBlock(depth::Int64, name::Symbol; g::ONNX.Types.Graph, pretrained::Bool, off=0) # 256
+    if !pretrained
+        return YOLOv7HeadBlock(depth, name)
+    end
+
+    ws = [
+        g.initializer["model.model.$(i + off).conv.weight"]
+    for i in filter(x -> x != 62, 56:63)]
+    bs = [
+        g.initializer["model.model.$(i + off).conv.bias"]
+    for i in filter(x -> x != 62, 56:63)]
+
+    cs = [
+        Conv(
+            Flux.Conv(w, b; stride=1, pad=SamePad()),
+            Flux.BatchNorm(size(w)[end])
+        )
+    for (w, b) in zip(ws, bs)]
+
+    return YOLOv7HeadBlock(depth, name, cs...)
 end
 
 function(m::YOLOv7HeadBlock)(x::AbstractArray)
@@ -704,6 +865,31 @@ function YOLOv7HeadIncep(depth::Int, routeback::Symbol)
     return YOLOv7HeadIncep(depth, mp, c1, c2, c3, routeback)
 end
 
+function YOLOv7HeadIncep(depth::Int, routeback::Symbol; g::ONNX.Types.Graph, pretrained::Bool, off=0, strides=[1, 1, 2])
+    if !pretrained
+        return YOLOv7HeadIncep(depth, routeback)
+    end
+
+    mp = MaxPool((2, 2))
+    
+    ws = [
+        g.initializer["model.model.$(i + off).conv.weight"]
+    for i in filter(x -> x != 62, 77:79)]
+    bs = [
+        g.initializer["model.model.$(i + off).conv.bias"]
+    for i in filter(x -> x != 62, 77:79)]
+
+    cs = [
+        Conv(
+            Flux.Conv(w, b; stride=s, pad=SamePad()),
+            Flux.BatchNorm(size(w)[end])
+        )
+    for (w, b, s) in zip(ws, bs, strides)]
+    
+
+    return YOLOv7HeadIncep(depth, mp, cs..., routeback)
+end
+
 function(m::YOLOv7HeadIncep)(x::Dict)
     xc1 = m.c1(m.mp(x[:x]))
     xc2 = m.c2(x[:x])
@@ -733,6 +919,27 @@ function YOLOv7HeadTailRepConv(depth::Int, routeback1::Symbol, routeback2::Symbo
     return YOLOv7HeadTailRepConv(depth, repc1, repc2, repc3, routeback1, routeback2, routeback3)
 end
 
+function YOLOv7HeadTailRepConv(depth::Int, routeback1::Symbol, routeback2::Symbol, routeback3::Symbol; g::ONNX.Types.Graph, pretrained::Bool)
+    if !pretrained
+        return YOLOv7HeadTailRepConv(depth, routeback1, routeback2, routeback3)
+    end
+
+    ws = [
+        (g.initializer["model.model.$(i).rbr_reparam.weight"], g.initializer["model.model.105.m.$(i - 102).weight"])
+    for i in 102:104]
+    bs = [
+        (g.initializer["model.model.$(i).rbr_reparam.bias"], g.initializer["model.model.105.m.$(i - 102).bias"])
+        for i in 102:104]
+
+    cs = [
+        RepConv(
+            w, b
+        )
+    for (w, b) in zip(ws, bs)]
+
+    return YOLOv7HeadTailRepConv(depth, cs..., routeback1, routeback2, routeback3)
+end
+
 function(m::YOLOv7HeadTailRepConv)(x::Dict)
     xrepc1 = m.repc1(x[m.routeback1])
     xrepc2 = m.repc2(x[m.routeback2])
@@ -744,12 +951,12 @@ end
 Flux.@functor YOLOv7HeadTailRepConv (repc1, repc2, repc3,)
 
 struct ImplicitAddition
-    w::AbstractArray{Float32,4}
+    w
 end
 
-function ImplicitAddition(depth::Int; mean=0.0, std=0.02)
+function ImplicitAddition(depth::Int; mean=0.0, std=0.02, device=gpu)
     d = Normal(mean, std)
-    w = Float32.(rand(d, 1, 1, depth, 1))
+    w = Float32.(rand(d, 1, 1, depth, 1)) |> device
 
     return ImplicitAddition(w)
 end
@@ -761,18 +968,18 @@ end
 Flux.@functor ImplicitAddition (w,)
 
 struct ImplicitMultiplication
-    w::AbstractArray{Float32,4}
+    w
 end
 
-function ImplicitMultiplication(depth::Int; mean=0.0, std=0.02)
+function ImplicitMultiplication(depth::Int; mean=0.0, std=0.02, device=gpu)
     d = Normal(mean, std)
-    w = Float32.(rand(d, 1, 1, depth, 1))
+    w = Float32.(rand(d, 1, 1, depth, 1)) |> device
 
     return ImplicitMultiplication(w)
 end
 
 function (m::ImplicitMultiplication)(x::AbstractArray)
-    return m.w .* x
+    return x .* m.w
 end
 
 Flux.@functor ImplicitMultiplication (w,)
@@ -782,9 +989,9 @@ struct IDetec
     outputs::Int
     detec_layers::Int
     n_anchors::Int
-    out_conv::Tuple{Vararg{Flux.Conv}}
-    ia::Tuple{Vararg{ImplicitAddition}}
-    im::Tuple{Vararg{ImplicitMultiplication}}
+    out_conv
+    ia
+    im
     anchors::Tuple
 end
 
@@ -802,22 +1009,42 @@ function IDetec(classes::Int; anchors::Tuple=(), channels::Tuple{Vararg{Int}}=()
     return IDetec(classes, outputs, detec_layers, n_anchors, out_conv, ia, im, anchors)
 end
 
-function (m::IDetec)(x::AbstractArray)
+function (m::IDetec)(x::Vector{CuArray{Float32, 4, CUDA.Mem.DeviceBuffer}})
     # z = []
-    println(size(x))
-    y = [CUDA.zeros(1, 1, 1, 1, 1), CUDA.zeros(1, 1, 1, 1, 1), CUDA.zeros(1, 1, 1, 1, 1)]
-    println(size(y))
-    for i in 1:m.detec_layers
-        x[i] = m.out_conv[i](m.ia[i](x[i]))
-        x[i] = m.im[i](x[i])
+    # println(typeof(x))
+    # println(size(x))
+    # y = [Flux.zeros32(1, 1, 1, 1, 1), Flux.zeros32(1, 1, 1, 1, 1), Flux.zeros32(1, 1, 1, 1, 1)] |> gpu
+    # println(size(y))
+    y = [
+        let
+            # println(size(m.ia[i].w), " ", typeof(m.ia[i].w))
+            # println(size(x[i]), " ", typeof(x[i]))
+            # x[i] = m.out_conv[i](m.ia[i](x[i]))
+            # println(size(m.out_conv[i].weight))
+            r = m.out_conv[i](m.ia[i](x[i]))
 
-        nx, ny, _, bs = size(x[i])
-        println((nx, ny, m.outputs, m.n_anchors, bs))
-        println(size(x[i]))
-        y[i] = permutedims(reshape(x[i], (nx, ny, m.outputs, m.n_anchors, bs)), (3, 1, 2, 4, 5))
-    end
+            # println(size(r), typeof(r))
+            
+            # x[i] = m.im[i](x[i])
+            r = m.im[i](r)
+            # println(size(r), typeof(r))
+
+            nx, ny, _, bs = size(r)
+            # println((nx, ny, m.outputs, m.n_anchors, bs))
+            # println(size(r))
+            permutedims(reshape(r, (nx, ny, m.outputs, m.n_anchors, bs)), (3, 1, 2, 4, 5))
+        end
+        for i in 1:m.detec_layers
+    ]
 
     return y
 end
 
 Flux.@functor IDetec (out_conv, ia, im,)
+
+# function Flux.trainable(a::IDetec)
+#     ias = (ia1=a.ia[1], ia2=a.ia[2], ia3=a.ia[3])
+#     ims = (im1=a.im[1], im2=a.im[2], im3=a.im[3])
+#     convs = (out_conv1=a.out_conv[1], out_conv2=a.out_conv[2], out_conv3=a.out_conv[3])
+#     merge(convs, ias, ims)
+# end
