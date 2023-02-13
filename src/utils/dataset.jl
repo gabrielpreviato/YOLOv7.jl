@@ -2,7 +2,6 @@ using Images
 using MLUtils
 using JSON
 using Flux
-using DataLoaders
 
 struct ImageDataset
     mapping::Dict{String, Int}
@@ -14,10 +13,10 @@ end
 
 function ImageDataset(folder::String, mapping::Dict{String, Int})
     image_files = filter(x -> split(x, ".")[end] in ["jpg", "jpeg", "png"],
-        readdir(folder * "\\images"; join=true)
+        readdir(folder * "/images"; join=true)
         )
     label_files = filter(x -> split(x, ".")[end] in ["json"],
-        readdir(folder * "\\obstacles"; join=true)
+        readdir(folder * "/obstacles"; join=true)
     )
 
     ImageDataset(mapping, folder, image_files, label_files)

@@ -1,5 +1,5 @@
-using ONNX
 using Flux
+using ProtoBuf
 
 # abstract type _yolov7 end
 
@@ -13,7 +13,7 @@ struct yolov7
     m
 end
 
-function yolov7(;name="yolov7", onnx_path="yolov7.onnx", pretrained=false)
+function yolov7(;name="yolov7", onnx_path="yolov7_training.onnx", pretrained=false)
     anchors = Tuple([
     [[0.87646 0.76221]; [0.30786 3.21289]; [5.64453 0.39526]],
     [[0.27368 2.20898]; [0.39478 3.63867]; [4.15234 0.60596]],
@@ -22,23 +22,29 @@ function yolov7(;name="yolov7", onnx_path="yolov7.onnx", pretrained=false)
 
     g = nothing
     if pretrained
-        f = ONNX.readproto(open(onnx_path), ONNX.Proto.ModelProto())
-        g = ONNX.convert(f.graph)
+        io = open(onnx_path)
+        d = ProtoDecoder(io)
+        mp = decode(d, YOLOv7.onnx.ModelProto)
+        g_raw = mp.graph
+        g_float = YOLOv7.onnx.get_array.(g_raw.initializer)
+        g_name = [x.name for x in g_raw.initializer]
+        g = Dict([(k,v) for (k,v) in zip(g_name, g_float)])
+        # g = ONNX.convert(f.graph)
     end
 
     model = Chain(                                                                                                                                                                                  
-        YOLOv7.YOLOv7Backbone(;p3=true, p4=true, g=g, pretrained=pretrained),
-        YOLOv7.SPPCSPC(1024, 512; g=g, pretrained=pretrained),
-        YOLOv7.YOLOv7HeadRouteback(512, :p4; g=g, pretrained=pretrained, off=0),
-        YOLOv7.YOLOv7HeadBlock(256, :h1; g=g, pretrained=pretrained, off=0), # 63
-        YOLOv7.YOLOv7HeadRouteback(256, :p3; g=g, pretrained=pretrained, off=12),
-        YOLOv7.YOLOv7HeadBlock(128, :h2; g=g, pretrained=pretrained, off=12), # 75
-        YOLOv7.YOLOv7HeadIncep(128, :h1; g=g, pretrained=pretrained, off=0),
-        YOLOv7.YOLOv7HeadBlock(256, :h3; g=g, pretrained=pretrained, off=25), #88
-        YOLOv7.YOLOv7HeadIncep(256, :sppcspc; g=g, pretrained=pretrained, off=13),
-        YOLOv7.YOLOv7HeadBlock(512, :h4; g=g, pretrained=pretrained, off=38), #101
-        YOLOv7.YOLOv7HeadTailRepConv(128, :h2, :h3, :h4),
-        YOLOv7.IDetec(2; anchors=anchors, channels=(256, 512, 1024)),
+        YOLOv7.YOLOv7Backbone(g, pretrained; p3=true, p4=true),
+        YOLOv7.SPPCSPC(1024, 512, g, pretrained),
+        YOLOv7.YOLOv7HeadRouteback(512, :p4, g, pretrained; off=0),
+        YOLOv7.YOLOv7HeadBlock(256, :h1, g, pretrained; off=0), # 63
+        YOLOv7.YOLOv7HeadRouteback(256, :p3, g, pretrained; off=12),
+        YOLOv7.YOLOv7HeadBlock(128, :h2, g, pretrained; off=12), # 75
+        YOLOv7.YOLOv7HeadIncep(128, :h1, g, pretrained; off=0),
+        YOLOv7.YOLOv7HeadBlock(256, :h3, g, pretrained; off=25), #88
+        YOLOv7.YOLOv7HeadIncep(256, :sppcspc, g, pretrained; off=13),
+        YOLOv7.YOLOv7HeadBlock(512, :h4, g, pretrained; off=38), #101
+        YOLOv7.YOLOv7HeadTailRepConv(128, :h2, :h3, :h4, g, pretrained),
+        YOLOv7.IDetec(80, g, pretrained; anchors=anchors, channels=(256, 512, 1024)),
     )
 
     # if pretrained

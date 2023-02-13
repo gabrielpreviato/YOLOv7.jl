@@ -1,5 +1,7 @@
 module YOLOv7
 
+include("onnx/onnx.jl")
+
 include("utils/activations.jl")
 include("utils/graph.jl")
 include("utils/blocks.jl")

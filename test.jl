@@ -2,21 +2,25 @@ using YOLOv7
 using Flux, ProgressMeter
 using Zygote
 using MLUtils
-using DataLoaders
+using Images
 using ImageDraw
 using ImageView
-using Images
 
 using CUDA
 CUDA.allowscalar(false)
 
 using BSON: @save, @load
 
+model = YOLOv7.yolov7(pretrained=true)
+m = model.m |> gpu
+x = rand(Float32, 640, 608, 3, 1) |> gpu
+y = m(x)
+
 mapping = Dict(
     "goal" => 1,
     "ball" => 2,
 )
-dataset = YOLOv7.ImageDataset(raw"C:\Users\gabri\Dropbox\IC\dataset\test6", mapping)
+dataset = YOLOv7.ImageDataset(raw"/media/previato/Windows-SSD/Users/gabri/Dropbox/IC/dataset/test6/", mapping)
 
 function my_custom_train!(loss, data, opt, model, BATCHSIZE, EPOCHS)
     for EPOCH in 1:EPOCHS
@@ -62,9 +66,16 @@ anchors = Tuple([
     [[0.87646 0.76221]; [0.30786 3.21289]; [5.64453 0.39526]],
     [[0.27368 2.20898]; [0.39478 3.63867]; [4.15234 0.60596]],
     [[0.32495 2.86133]; [0.59619 4.11719]; [2.95312 1.13184]]
-])
+    ])
 
-anchors_grid = anchors .* [16, 32, 64]
+
+anchors = Tuple([
+    [[12 16]; [19 36]; [40 28]],  # P3/8
+    [[36 75]; [76 55]; [72 146]],  # P4/16
+    [[142 110]; [192 243]; [459 401]]
+]) #./ [16, 32, 64]
+
+anchors_grid = anchors # .* [16, 32, 64]
 
 # anchors_grid =  Tuple([[6.0 8.0; 9.5 18.0; 20.0 14.0],
 #                         [18.0 37.5; 38.0 27.5; 36.0 73.0],
@@ -205,8 +216,8 @@ println("Starting training.")
 
 @load "mymodel_preload_4.bson" cpu_model
 
-model = cpu_model |> gpu
-# m = YOLOv7.yolov7(pretrained=true)
+# model = cpu_model |> gpu
+
 # model = m.m |> gpu
 
 opt_backbone = Flux.setup(Flux.Adam(0.00005), model[1:2])
@@ -248,14 +259,14 @@ function output_to_box(ŷ, anchors_grid, stride)
         # println(size(sig[1:2, :, :, :, :]))
         # println(size(grid))
 
-        println(grid[1:2, 1:2, 1:2, :, :])
-        println(sig[1:2, 1:2, 1:2, :, :])
-        println(stride[i])
+        # println(grid[1:2, 1:2, 1:2, :, :])
+        # println(sig[1:2, 1:2, 1:2, :, :])
+        # println(stride[i])
 
         sig[1:2, :, :, :, :] .= @. (sig[1:2, :, :, :, :] * 2.0 - 0.5 + grid) * stride[i]
 
-        println(sig[1:2, 1:2, 1:2, :, :])
-        println("-----")
+        # println(sig[1:2, 1:2, 1:2, :, :])
+        # println("-----")
 
         # println(size(sig[3:4, :, :, :, :]))
         # println(size(reshape(anchors_grid[i]', (2, 1, 1, 3, 1))))
@@ -346,7 +357,7 @@ function non_max_suppression(prediction; nc=1, conf_thres=0.25, iou_thres=0.45, 
     merge = false  # use merge-NMS
 
     output = repeat([Flux.zeros32(0, 6)], size(prediction)[1])
-    println(size(output))
+    # println(size(output))
     for (i, x) in enumerate(prediction)  # image index, image inference
         # Apply constraints
         # x[((x[..., 2:4] < min_wh) | (x[..., 2:4] > max_wh)).any(1), 4] = 0  # width-height
@@ -358,9 +369,9 @@ function non_max_suppression(prediction; nc=1, conf_thres=0.25, iou_thres=0.45, 
 
         x = x[xc, :]'  # confidence
 
-        println(x)
+        # println(x)
 
-        println(size(x))
+        # println(size(x))
 
         # Cat apriori labels if autolabelling
         # if length(labels) != 0 && length(labels[i]) > 0
@@ -390,7 +401,7 @@ function non_max_suppression(prediction; nc=1, conf_thres=0.25, iou_thres=0.45, 
             x[6:end, :] = x[5, :] # for models with one class, cls_loss is 0 and cls_conf is always 0.5,
                                  # so there is no need to multiplicate.
         else
-            println(size(x[6:end, :]), size(x[5, :]))
+            # println(size(x[6:end, :]), size(x[5, :]))
             x[6:end, :] .= x[6:end, :] .* x[5, :]'  # conf = obj_conf * cls_conf
         end
 
@@ -406,15 +417,15 @@ function non_max_suppression(prediction; nc=1, conf_thres=0.25, iou_thres=0.45, 
             # conf, j = x[:, 5:end].max(1, keepdim=True)
             conf, j = findmax(x[6:end, :], dims=1)
 
-            println(size(box))
-            println(size(conf))
-            println(size(map(x -> float.(x[1]), j)))
+            # println(size(box))
+            # println(size(conf))
+            # println(size(map(x -> float.(x[1]), j)))
 
             x = vcat(box, conf, map(x -> float.(x[1]), j))'
             x = x[conf[1, :] .> conf_thres, :]'
         end
 
-        println(size(x))
+        # println(size(x))
 
         # Filter by class
         if classes !== nothing
@@ -484,21 +495,29 @@ end
 # a = rand(Float32, 40, 40, 256, 2)
 # b = rand(Float32, 1, 1, 256, 1)
 strid = [8, 16, 32]
+strid = [16, 32, 64]
 
-r = MLUtils.getobs(dataset, [2500])
-x, y =  r[1] |> gpu, r[2] |> gpu
-ŷ = model(x)
-l = YOLOv7.loss(cl, ŷ, y, 1; nc=2)
+# r = MLUtils.getobs(dataset, [2500])
+# x, y =  r[1] |> gpu, r[2] |> gpu
+# l = YOLOv7.loss(cl, ŷ, y, 1; nc=2)
+x = float.(Images.load.(["horses.jpg"]))
+x = imresize.(x, 640, 640)
+x = channelview.(x)
+x = permutedims.(x, ((3, 2, 1),))
+x = stack(x, dims=4) |> gpu
+
+ŷ = m(x)
+
 
 img = copy(x[:, :, :, 1]) |> cpu
 img_CHW = permutedims(img, (3, 2, 1))
 img_rgb = colorview(RGB, img_CHW)
 
 out = output_to_box(ŷ, anchors_grid, strid)
-out_nms = non_max_suppression([out], nc=5)[1]
+out_nms = non_max_suppression([out]; nc=80, conf_thres=0.00001)[1]
 colors = [RGB{Float32}(1.0, 0.0, 0.0), RGB{Float32}(0.0, 1.0, 0.0), RGB{Float32}(0.0, 0.0, 1.0)]
 
-conf1 = out[5, :, :] .> 0.25
+conf1 = out[5, :, :] .> 0.0005
 d1 = permutedims(out, (2, 3, 1))[conf1, :]
 d1 = trunc.(Int, d1)'
 for i in 1:size(d1)[2]

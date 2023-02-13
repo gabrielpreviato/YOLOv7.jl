@@ -1,10 +1,14 @@
 using Flux
 using Zygote
-using ONNX
 using CUDA
 using Distributions, Random
 
 using YOLOv7: Node
+
+ϵ = 0.001f0
+momentum = 0.970f0
+
+flip(x) = x[end:-1:1, end:-1:1, :, :]
 
 # custom split layer
 struct Split{T}
@@ -343,11 +347,12 @@ end
 
 struct Conv
     conv::Flux.Conv
-    bn::Flux.BatchNorm
+    bn::Union{Flux.BatchNorm, typeof(identity)}
     act::Function
 end
 
 Conv(conv::Flux.Conv, bn::Flux.BatchNorm) = Conv(conv, bn, silu)
+Conv(conv::Flux.Conv, bn::typeof(identity)) = Conv(conv, bn, silu)
 
 function Conv(c::Pair{Int64, Int64}, kernel, stride)
     return Conv(
@@ -361,11 +366,12 @@ Flux.@functor Conv
 function (m::Conv)(x::AbstractArray)
     # println(x)
     m.act(m.bn(m.conv(x)))
+    # m.act(m.conv(x))
 end
 
 function (m::Conv)(x::Dict)
     # println(x)
-    x[:x] = m.act(m.bn(m.conv(x[:x])))
+    x[:x] = m.act(m.conv(x[:x]))
     return x
 end
 
@@ -402,24 +408,33 @@ function SPPCSPC(c1, c2; n=1, shortcut=false, groups=1, e=0.5, k=(5, 9, 13))
         return SPPCSPC(cv1, cv2, cv3, cv4, m, cv5, cv6, cv7)
 end
 
-function SPPCSPC(c1, c2; g::ONNX.Types.Graph, pretrained::Bool, n=1, shortcut=false, groups=1, e=0.5, k=(5, 9, 13))
+function SPPCSPC(c1, c2, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool, n=1, shortcut=false, groups=1, e=0.5, k=(5, 9, 13))
     if !pretrained
         return SPPCSPC(c1, c2, n=n, shortcut=shortcut, groups=groups, e=e, k=k)
     end
     
     ws = [
-        g.initializer["model.model.51.cv$(i).conv.weight"]
-    for i in 1:7]
-    bs = [
-        g.initializer["model.model.51.cv$(i).conv.bias"]
-    for i in 1:7]
-
-    cs = [
-        Conv(
-            Flux.Conv(w, b; stride=1, pad=SamePad()),
-            Flux.BatchNorm(size(w)[end])
-        )
-    for (w, b) in zip(ws, bs)]
+            flip(g["model.51.cv$(i).conv.weight"])
+        for i in 1:7]
+        γs = [
+            g["model.51.cv$(i).bn.weight"]
+        for i in 1:7]
+        βs = [
+            g["model.51.cv$(i).bn.bias"]
+        for i in 1:7]
+        μs = [
+            g["model.51.cv$(i).bn.running_mean"]
+        for i in 1:7]
+        σ²s = [
+            g["model.51.cv$(i).bn.running_var"]
+        for i in 1:7]
+   
+        cs = [
+            Conv(
+                Flux.Conv(w, false; stride=1, pad=SamePad()),
+                Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, nothing, length(γ))
+            )
+        for (w, γ, β, μ, σ²) in zip(ws, γs, βs, μs, σ²s)]
 
     m = [Flux.MaxPool((x, x); stride=1, pad=x÷2) for x in k]
 
@@ -451,7 +466,7 @@ struct RepConv
     act::Function
 end
 
-function RepConv(c1, c2; k=3, s=1, p=nothing, groups=1, act=true)
+function RepConv(c1::Int, c2::Int; k=3, s=1, p=nothing, groups=1, act=true)
     # groups = g
     # ch_in = c1
     # ch_out = c2
@@ -471,20 +486,21 @@ function RepConv(c1, c2; k=3, s=1, p=nothing, groups=1, act=true)
     return RepConv(rbr_identity, rbr_dense, rbr_1x1, activation)
 end
 
-function RepConv(w, b)
+function RepConv(w::Tuple{AbstractArray, AbstractArray}, b::NTuple)
     # groups = g
     # ch_in = c1
     # ch_out = c2
     activation = silu
 
     rbr_identity = nothing
+    β, γ, μ, σ² = b
     rbr_dense = Chain(
-        Flux.Conv(w[1], b[1]; stride=1, pad=SamePad()),
-        BatchNorm(size(w[1])[end])
+        Flux.Conv(w[1], false; stride=1, pad=SamePad()),
+        Flux.BatchNorm(identity, β[1], γ[1], μ[1], σ²[1], ϵ, momentum, true, true, nothing, length(γ[1]))
     )
     rbr_1x1 = Chain(
-        Flux.Conv(w[2], b[2]; stride=1, pad=SamePad()),
-        BatchNorm(size(w[2])[end])
+        Flux.Conv(w[2], false; stride=1, pad=SamePad()),
+        Flux.BatchNorm(identity, β[2], γ[2], μ[2], σ²[2], ϵ, momentum, true, true, nothing, length(γ[2]))
     )
 
     return RepConv(rbr_identity, rbr_dense, rbr_1x1, activation)
@@ -549,24 +565,33 @@ function YOLOv7BackboneBlock(depth::Int64; half_cut=false, start_mp=true)
     return YOLOv7BackboneBlock(depth, mp, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10)
 end
 
-function YOLOv7BackboneBlock(depth::Int64; g::ONNX.Types.Graph, pretrained::Bool, off=0, half_cut=false, start_mp=true)
+function YOLOv7BackboneBlock(depth::Int64, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool; off=0, half_cut=false, start_mp=true)
     if !pretrained
         return YOLOv7BackboneBlock(depth, half_cut=half_cut, start_mp=start_mp)
     else
         stride = [1, 1, 2, 1, 1, 1, 1, 1, 1, 1]
         ws = [
-            g.initializer["model.model.$(i + off).conv.weight"]
-        for i in filter(x -> x != 16 && x != 23, 13:24)]
-        bs = [
-            g.initializer["model.model.$(i + off).conv.bias"]
-        for i in filter(x -> x != 16 && x != 23, 13:24)]
+            flip(g["model.$(13+i+off).conv.weight"])
+        for i in filter(x -> x != 3 && x != 10, 0:11)]
+        γs = [
+            g["model.$(13+i+off).bn.weight"]
+        for i in filter(x -> x != 3 && x != 10, 0:11)]
+        βs = [
+            g["model.$(13+i+off).bn.bias"]
+        for i in filter(x -> x != 3 && x != 10, 0:11)]
+        μs = [
+            g["model.$(13+i+off).bn.running_mean"]
+        for i in filter(x -> x != 3 && x != 10, 0:11)]
+        σ²s = [
+            g["model.$(13+i+off).bn.running_var"]
+        for i in filter(x -> x != 3 && x != 10, 0:11)]
    
         cs = [
             Conv(
-                Flux.Conv(w, b; stride=s, pad=SamePad()),
-                Flux.BatchNorm(size(w)[end])
+                Flux.Conv(w, false; stride=s, pad=SamePad()),
+                Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, nothing, length(γ))
             )
-        for (w, b, s) in zip(ws, bs, stride)]
+        for (w, s, γ, β, μ, σ²) in zip(ws, stride, γs, βs, μs, σ²s)]
     end
     
     if start_mp
@@ -619,24 +644,33 @@ function YOLOv7BackboneInit(depth::Int64)
     return YOLOv7BackboneInit(depth, c1, c2, c3, c4, c5, c6, c7, c8)
 end
 
-function YOLOv7BackboneInit(depth::Int64; g::ONNX.Types.Graph, pretrained::Bool)
+function YOLOv7BackboneInit(depth::Int64, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool)
     if !pretrained
         return YOLOv7BackboneInit(depth)
     else
         stride = [2, 1, 1, 1, 1, 1, 1, 1]
         ws = [
-            g.initializer["model.model.$(i).conv.weight"]
-        for i in filter(x -> x != 10, 3:11)]
-        bs = [
-            g.initializer["model.model.$(i).conv.bias"]
-        for i in filter(x -> x != 10, 3:11)]
+            flip(g["model.$(3+i).conv.weight"])
+        for i in filter(x -> x!=7, 0:8)]
+        γs = [
+            reverse(g["model.$(3+i).bn.weight"])
+        for i in filter(x -> x!=7, 0:8)]
+        βs = [
+            reverse(g["model.$(3+i).bn.bias"])
+        for i in filter(x -> x!=7, 0:8)]
+        μs = [
+            g["model.$(3+i).bn.running_mean"]
+        for i in filter(x -> x!=7, 0:8)]
+        σ²s = [
+            g["model.$(3+i).bn.running_var"]
+        for i in filter(x -> x!=7, 0:8)]
    
         cs = [
             Conv(
-                Flux.Conv(w, b; stride=s, pad=SamePad()),
-                Flux.BatchNorm(size(w)[end])
+                Flux.Conv(w, false; stride=s, pad=SamePad()),
+                Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, nothing, length(γ))
             )
-        for (w, b, s) in zip(ws, bs, stride)]
+        for (w, s, γ, β, μ, σ²) in zip(ws, stride, γs, βs, μs, σ²s)]
     end
 
     return YOLOv7BackboneInit(depth, cs...)
@@ -668,22 +702,31 @@ struct YOLOv7Backbone
     p4::Bool
 end
 
-function YOLOv7Backbone(; mps::Array{Bool, 1}=[true, true, true], p3=false, p4=false, g::ONNX.Types.Graph, pretrained::Bool)
+function YOLOv7Backbone(g::Dict{String, AbstractArray{Float32}}, pretrained::Bool; mps::Array{Bool, 1}=[true, true, true], p3=false, p4=false)
     if pretrained
         stride = [1, 2, 1]
         ws = [
-            g.initializer["model.model.$(i).conv.weight"]
+            flip(g["model.$(0+i).conv.weight"])
         for i in 0:2]
-        bs = [
-            g.initializer["model.model.$(i).conv.bias"]
+        γs = [
+            g["model.$(0+i).bn.weight"]
+        for i in 0:2]
+        βs = [
+            g["model.$(0+i).bn.bias"]
+        for i in 0:2]
+        μs = [
+            g["model.$(0+i).bn.running_mean"]
+        for i in 0:2]
+        σ²s = [
+            g["model.$(0+i).bn.running_var"]
         for i in 0:2]
    
         cs = [
             Conv(
-                Flux.Conv(w, b; stride=s, pad=SamePad()),
-                Flux.BatchNorm(size(w)[end])
+                Flux.Conv(w, false; stride=s, pad=SamePad()),
+                Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, nothing, length(γ))
             )
-        for (w, b, s) in zip(ws, bs, stride)]
+        for (w, s, γ, β, μ, σ²) in zip(ws, stride, γs, βs, μs, σ²s)]
     else
         cs = [
             Conv(3 => 32, 3, 1)
@@ -692,10 +735,10 @@ function YOLOv7Backbone(; mps::Array{Bool, 1}=[true, true, true], p3=false, p4=f
         ]
     end
 
-    ybi = YOLOv7BackboneInit(64; g=g, pretrained=pretrained)
-    ybb1 = YOLOv7BackboneBlock(128; g=g, pretrained=pretrained, off=0, start_mp=mps[1])
-    ybb2 = YOLOv7BackboneBlock(256; g=g, pretrained=pretrained, off=13, start_mp=mps[2])
-    ybb3 = YOLOv7BackboneBlock(512; g=g, pretrained=pretrained, off=26, half_cut=true, start_mp=mps[3])
+    ybi = YOLOv7BackboneInit(64, g, pretrained)
+    ybb1 = YOLOv7BackboneBlock(128, g, pretrained; off=0, start_mp=mps[1])
+    ybb2 = YOLOv7BackboneBlock(256, g, pretrained; off=13, start_mp=mps[2])
+    ybb3 = YOLOv7BackboneBlock(512, g, pretrained; off=26, half_cut=true, start_mp=mps[3])
 
     return YOLOv7Backbone(cs..., ybi, ybb1, ybb2, ybb3, p3, p4)
 end
@@ -735,24 +778,33 @@ function YOLOv7HeadRouteback(depth::Int, routeback::Symbol)
     return YOLOv7HeadRouteback(depth, c1, up, cback, routeback)
 end
 
-function YOLOv7HeadRouteback(depth::Int, routeback::Symbol; g::ONNX.Types.Graph, pretrained::Bool, off=0)
+function YOLOv7HeadRouteback(depth::Int, routeback::Symbol, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool; off=0)
     if !pretrained
         return YOLOv7HeadRouteback(depth, routeback)
     end
     
     ws = [
-        g.initializer["model.model.$(i + off).conv.weight"]
-    for i in [52, 54]]
-    bs = [
-        g.initializer["model.model.$(i + off).conv.bias"]
-    for i in [52, 54]]
+        flip(g["model.$(52+i+off).conv.weight"])
+    for i in [0, 2]]
+    γs = [
+        g["model.$(52+i+off).bn.weight"]
+    for i in [0, 2]]
+    βs = [
+        g["model.$(52+i+off).bn.bias"]
+    for i in [0, 2]]
+    μs = [
+        g["model.$(52+i+off).bn.running_mean"]
+    for i in [0, 2]]
+    σ²s = [
+        g["model.$(52+i+off).bn.running_var"]
+    for i in [0, 2]]
 
     cs = [
         Conv(
-            Flux.Conv(w, b; stride=1, pad=SamePad()),
-            Flux.BatchNorm(size(w)[end])
+            Flux.Conv(w, false; stride=1, pad=SamePad()),
+            Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, nothing, length(γ))
         )
-    for (w, b) in zip(ws, bs)]
+    for (w, γ, β, μ, σ²) in zip(ws, γs, βs, μs, σ²s)]
     up = Upsample(2, :nearest)
 
     return YOLOv7HeadRouteback(depth, cs[1], up, cs[2], routeback)
@@ -795,24 +847,33 @@ function YOLOv7HeadBlock(depth::Int64, name::Symbol) # 256
     return YOLOv7HeadBlock(depth, name, c1, c2, c3, c4, c5, c6, c7)
 end
 
-function YOLOv7HeadBlock(depth::Int64, name::Symbol; g::ONNX.Types.Graph, pretrained::Bool, off=0) # 256
+function YOLOv7HeadBlock(depth::Int64, name::Symbol, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool; off=0) # 256
     if !pretrained
         return YOLOv7HeadBlock(depth, name)
     end
 
     ws = [
-        g.initializer["model.model.$(i + off).conv.weight"]
-    for i in filter(x -> x != 62, 56:63)]
-    bs = [
-        g.initializer["model.model.$(i + off).conv.bias"]
-    for i in filter(x -> x != 62, 56:63)]
+        flip(g["model.$(56+i+off).conv.weight"])
+    for i in filter(x -> x != 6, 0:7)]
+    γs = [
+        g["model.$(56+i+off).bn.weight"]
+    for i in filter(x -> x != 6, 0:7)]
+    βs = [
+        g["model.$(56+i+off).bn.bias"]
+    for i in filter(x -> x != 6, 0:7)]
+    μs = [
+        g["model.$(56+i+off).bn.running_mean"]
+    for i in filter(x -> x != 6, 0:7)]
+    σ²s = [
+        g["model.$(56+i+off).bn.running_var"]
+    for i in filter(x -> x != 6, 0:7)]
 
     cs = [
         Conv(
-            Flux.Conv(w, b; stride=1, pad=SamePad()),
-            Flux.BatchNorm(size(w)[end])
+            Flux.Conv(w, false; stride=1, pad=SamePad()),
+            Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, nothing, length(γ))
         )
-    for (w, b) in zip(ws, bs)]
+    for (w, γ, β, μ, σ²) in zip(ws, γs, βs, μs, σ²s)]
 
     return YOLOv7HeadBlock(depth, name, cs...)
 end
@@ -865,7 +926,7 @@ function YOLOv7HeadIncep(depth::Int, routeback::Symbol)
     return YOLOv7HeadIncep(depth, mp, c1, c2, c3, routeback)
 end
 
-function YOLOv7HeadIncep(depth::Int, routeback::Symbol; g::ONNX.Types.Graph, pretrained::Bool, off=0, strides=[1, 1, 2])
+function YOLOv7HeadIncep(depth::Int, routeback::Symbol, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool; off=0, strides=[1, 1, 2])
     if !pretrained
         return YOLOv7HeadIncep(depth, routeback)
     end
@@ -873,18 +934,27 @@ function YOLOv7HeadIncep(depth::Int, routeback::Symbol; g::ONNX.Types.Graph, pre
     mp = MaxPool((2, 2))
     
     ws = [
-        g.initializer["model.model.$(i + off).conv.weight"]
-    for i in filter(x -> x != 62, 77:79)]
-    bs = [
-        g.initializer["model.model.$(i + off).conv.bias"]
-    for i in filter(x -> x != 62, 77:79)]
+        flip(g["model.$(77+i+off).conv.weight"])
+    for i in 0:2]
+    γs = [
+        g["model.$(77+i+off).bn.weight"]
+    for i in 0:2]
+    βs = [
+        g["model.$(77+i+off).bn.bias"]
+    for i in 0:2]
+    μs = [
+        g["model.$(77+i+off).bn.running_mean"]
+    for i in 0:2]
+    σ²s = [
+        g["model.$(77+i+off).bn.running_var"]
+    for i in 0:2]
 
     cs = [
         Conv(
-            Flux.Conv(w, b; stride=s, pad=SamePad()),
-            Flux.BatchNorm(size(w)[end])
+            Flux.Conv(w, false; stride=s, pad=SamePad()),
+            Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, nothing, length(γ))
         )
-    for (w, b, s) in zip(ws, bs, strides)]
+    for (w, s, γ, β, μ, σ²) in zip(ws, strides, γs, βs, μs, σ²s)]
     
 
     return YOLOv7HeadIncep(depth, mp, cs..., routeback)
@@ -919,23 +989,32 @@ function YOLOv7HeadTailRepConv(depth::Int, routeback1::Symbol, routeback2::Symbo
     return YOLOv7HeadTailRepConv(depth, repc1, repc2, repc3, routeback1, routeback2, routeback3)
 end
 
-function YOLOv7HeadTailRepConv(depth::Int, routeback1::Symbol, routeback2::Symbol, routeback3::Symbol; g::ONNX.Types.Graph, pretrained::Bool)
+function YOLOv7HeadTailRepConv(depth::Int, routeback1::Symbol, routeback2::Symbol, routeback3::Symbol, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool)
     if !pretrained
         return YOLOv7HeadTailRepConv(depth, routeback1, routeback2, routeback3)
     end
 
     ws = [
-        (g.initializer["model.model.$(i).rbr_reparam.weight"], g.initializer["model.model.105.m.$(i - 102).weight"])
-    for i in 102:104]
-    bs = [
-        (g.initializer["model.model.$(i).rbr_reparam.bias"], g.initializer["model.model.105.m.$(i - 102).bias"])
-        for i in 102:104]
+        (flip(g["model.$(102+i).rbr_dense.0.weight"]), flip(g["model.$(102+i).rbr_1x1.0.weight"]))
+    for i in 0:2]
+    γs = [
+        (g["model.$(102+i).rbr_dense.1.weight"], g["model.$(102+i).rbr_1x1.1.weight"])
+    for i in 0:2]
+    βs = [
+        (g["model.$(102+i).rbr_dense.1.bias"], g["model.$(102+i).rbr_1x1.1.bias"])
+    for i in 0:2]
+    μs = [
+        (g["model.$(102+i).rbr_dense.1.running_mean"], g["model.$(102+i).rbr_1x1.1.running_mean"])
+    for i in 0:2]
+    σ²s = [
+        (g["model.$(102+i).rbr_dense.1.running_var"], g["model.$(102+i).rbr_1x1.1.running_var"])
+    for i in 0:2]
 
     cs = [
         RepConv(
-            w, b
+            w, (γ, β, μ, σ²)
         )
-    for (w, b) in zip(ws, bs)]
+    for (w, γ, β, μ, σ²) in zip(ws, γs, βs, μs, σ²s)]
 
     return YOLOv7HeadTailRepConv(depth, cs..., routeback1, routeback2, routeback3)
 end
@@ -1009,6 +1088,33 @@ function IDetec(classes::Int; anchors::Tuple=(), channels::Tuple{Vararg{Int}}=()
     return IDetec(classes, outputs, detec_layers, n_anchors, out_conv, ia, im, anchors)
 end
 
+function IDetec(classes::Int, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool; anchors::Tuple=(), channels::Tuple{Vararg{Int}}=())
+    if !pretrained
+        return IDetec(classes, anchors, channels)
+    end
+
+    ws = [
+        flip(g["model.105.m.$i.weight"])
+    for i in 0:2]
+    bs = [
+        g["model.105.m.$i.bias"]
+    for i in 0:2]
+
+    out_conv = [
+        Flux.Conv(w, b; stride=1, pad=SamePad())
+    for (w, b) in zip(ws, bs)]
+
+    ia = [
+        ImplicitAddition(g["model.105.ia.$i.implicit"])
+    for i in 0:2]
+
+    im = [
+        ImplicitMultiplication(g["model.105.im.$i.implicit"])
+    for i in 0:2]
+
+    return IDetec(classes, 85, 3, 3, out_conv, ia, im, anchors)
+end
+
 function (m::IDetec)(x::Vector{CuArray{Float32, 4, CUDA.Mem.DeviceBuffer}})
     # z = []
     # println(typeof(x))
@@ -1033,6 +1139,7 @@ function (m::IDetec)(x::Vector{CuArray{Float32, 4, CUDA.Mem.DeviceBuffer}})
             # println((nx, ny, m.outputs, m.n_anchors, bs))
             # println(size(r))
             permutedims(reshape(r, (nx, ny, m.outputs, m.n_anchors, bs)), (3, 1, 2, 4, 5))
+            # permutedims(reshape(r, (bs, m.n_anchors, m.outputs, ny, nx)), (3, 4, 5, 2, 1))
         end
         for i in 1:m.detec_layers
     ]

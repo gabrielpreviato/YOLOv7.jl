@@ -1,4 +1,3 @@
-using YAML
 using Flux
 
 # using YOLOv7: Node, Split, YOLOChain, SPPCSPC, silu, YOLOBlock
