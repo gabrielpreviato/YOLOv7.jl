@@ -5,7 +5,7 @@ using Distributions, Random
 
 using YOLOv7: Node
 
-ϵ = 0.001f0
+ϵ = 0.00001f0
 momentum = 0.970f0
 
 flip(x) = x[end:-1:1, end:-1:1, :, :]
@@ -371,7 +371,7 @@ end
 
 function (m::Conv)(x::Dict)
     # println(x)
-    x[:x] = m.act(m.conv(x[:x]))
+    x[:x] = m.act(m.bn(m.conv(x[:x])))
     return x
 end
 
@@ -432,7 +432,7 @@ function SPPCSPC(c1, c2, g::Dict{String, AbstractArray{Float32}}, pretrained::Bo
         cs = [
             Conv(
                 Flux.Conv(w, false; stride=1, pad=SamePad()),
-                Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, nothing, length(γ))
+                Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, true, length(γ))
             )
         for (w, γ, β, μ, σ²) in zip(ws, γs, βs, μs, σ²s)]
 
@@ -496,11 +496,11 @@ function RepConv(w::Tuple{AbstractArray, AbstractArray}, b::NTuple)
     β, γ, μ, σ² = b
     rbr_dense = Chain(
         Flux.Conv(w[1], false; stride=1, pad=SamePad()),
-        Flux.BatchNorm(identity, β[1], γ[1], μ[1], σ²[1], ϵ, momentum, true, true, nothing, length(γ[1]))
+        Flux.BatchNorm(identity, β[1], γ[1], μ[1], σ²[1], ϵ, momentum, true, true, true, length(γ[1]))
     )
     rbr_1x1 = Chain(
         Flux.Conv(w[2], false; stride=1, pad=SamePad()),
-        Flux.BatchNorm(identity, β[2], γ[2], μ[2], σ²[2], ϵ, momentum, true, true, nothing, length(γ[2]))
+        Flux.BatchNorm(identity, β[2], γ[2], μ[2], σ²[2], ϵ, momentum, true, true, true, length(γ[2]))
     )
 
     return RepConv(rbr_identity, rbr_dense, rbr_1x1, activation)
@@ -589,7 +589,7 @@ function YOLOv7BackboneBlock(depth::Int64, g::Dict{String, AbstractArray{Float32
         cs = [
             Conv(
                 Flux.Conv(w, false; stride=s, pad=SamePad()),
-                Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, nothing, length(γ))
+                Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, true, length(γ))
             )
         for (w, s, γ, β, μ, σ²) in zip(ws, stride, γs, βs, μs, σ²s)]
     end
@@ -653,10 +653,10 @@ function YOLOv7BackboneInit(depth::Int64, g::Dict{String, AbstractArray{Float32}
             flip(g["model.$(3+i).conv.weight"])
         for i in filter(x -> x!=7, 0:8)]
         γs = [
-            reverse(g["model.$(3+i).bn.weight"])
+            g["model.$(3+i).bn.weight"]
         for i in filter(x -> x!=7, 0:8)]
         βs = [
-            reverse(g["model.$(3+i).bn.bias"])
+            g["model.$(3+i).bn.bias"]
         for i in filter(x -> x!=7, 0:8)]
         μs = [
             g["model.$(3+i).bn.running_mean"]
@@ -668,7 +668,7 @@ function YOLOv7BackboneInit(depth::Int64, g::Dict{String, AbstractArray{Float32}
         cs = [
             Conv(
                 Flux.Conv(w, false; stride=s, pad=SamePad()),
-                Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, nothing, length(γ))
+                Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, true, length(γ))
             )
         for (w, s, γ, β, μ, σ²) in zip(ws, stride, γs, βs, μs, σ²s)]
     end
@@ -724,7 +724,7 @@ function YOLOv7Backbone(g::Dict{String, AbstractArray{Float32}}, pretrained::Boo
         cs = [
             Conv(
                 Flux.Conv(w, false; stride=s, pad=SamePad()),
-                Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, nothing, length(γ))
+                Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, true, length(γ))
             )
         for (w, s, γ, β, μ, σ²) in zip(ws, stride, γs, βs, μs, σ²s)]
     else
@@ -802,7 +802,7 @@ function YOLOv7HeadRouteback(depth::Int, routeback::Symbol, g::Dict{String, Abst
     cs = [
         Conv(
             Flux.Conv(w, false; stride=1, pad=SamePad()),
-            Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, nothing, length(γ))
+            Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, true, length(γ))
         )
     for (w, γ, β, μ, σ²) in zip(ws, γs, βs, μs, σ²s)]
     up = Upsample(2, :nearest)
@@ -871,7 +871,7 @@ function YOLOv7HeadBlock(depth::Int64, name::Symbol, g::Dict{String, AbstractArr
     cs = [
         Conv(
             Flux.Conv(w, false; stride=1, pad=SamePad()),
-            Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, nothing, length(γ))
+            Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, true, length(γ))
         )
     for (w, γ, β, μ, σ²) in zip(ws, γs, βs, μs, σ²s)]
 
@@ -952,7 +952,7 @@ function YOLOv7HeadIncep(depth::Int, routeback::Symbol, g::Dict{String, Abstract
     cs = [
         Conv(
             Flux.Conv(w, false; stride=s, pad=SamePad()),
-            Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, nothing, length(γ))
+            Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, true, length(γ))
         )
     for (w, s, γ, β, μ, σ²) in zip(ws, strides, γs, βs, μs, σ²s)]
     

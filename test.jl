@@ -5,6 +5,7 @@ using MLUtils
 using Images
 using ImageDraw
 using ImageView
+using Statistics
 
 using CUDA
 CUDA.allowscalar(false)
@@ -13,6 +14,7 @@ using BSON: @save, @load
 
 model = YOLOv7.yolov7(pretrained=true)
 m = model.m |> gpu
+testmode!(m)
 x = rand(Float32, 640, 608, 3, 1) |> gpu
 y = m(x)
 
@@ -503,10 +505,12 @@ strid = [16, 32, 64]
 x = float.(Images.load.(["horses.jpg"]))
 x = imresize.(x, 640, 640)
 x = channelview.(x)
-x = permutedims.(x, ((3, 2, 1),))
+x = permutedims.(x, ((2, 3, 1),))
 x = stack(x, dims=4) |> gpu
 
 ŷ = m(x)
+
+# x .- μ) ./ sqrt.(σ² .+ ϵ)
 
 
 img = copy(x[:, :, :, 1]) |> cpu
@@ -514,10 +518,10 @@ img_CHW = permutedims(img, (3, 2, 1))
 img_rgb = colorview(RGB, img_CHW)
 
 out = output_to_box(ŷ, anchors_grid, strid)
-out_nms = non_max_suppression([out]; nc=80, conf_thres=0.00001)[1]
+out_nms = non_max_suppression([out]; nc=80, conf_thres=0.000001)[1]
 colors = [RGB{Float32}(1.0, 0.0, 0.0), RGB{Float32}(0.0, 1.0, 0.0), RGB{Float32}(0.0, 0.0, 1.0)]
 
-conf1 = out[5, :, :] .> 0.0005
+conf1 = out[5, :, :] .> 0.05
 d1 = permutedims(out, (2, 3, 1))[conf1, :]
 d1 = trunc.(Int, d1)'
 for i in 1:size(d1)[2]
@@ -526,7 +530,7 @@ for i in 1:size(d1)[2]
     draw!(img_rgb, Polygon(RectanglePoints(x1, y1, x2, y2)), colors[1])
 end
 
-out_nms_trunc = trunc.(Int, out_nms)
+out_nms_trunc = trunc.(Int, out_nms ./ 2) 
 for i in 1:size(out_nms_trunc)[2]
     x1, y1 = out_nms_trunc[1, i], out_nms_trunc[2, i]
     x2, y2 = out_nms_trunc[3, i], out_nms_trunc[4, 1]
