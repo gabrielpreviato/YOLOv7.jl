@@ -12,9 +12,9 @@ CUDA.allowscalar(false)
 
 using BSON: @save, @load
 
-model = YOLOv7.yolov7(pretrained=true)
+model = YOLOv7.yolov7_from_torch()
 m = model.m |> gpu
-testmode!(m)
+testmode!(m, false)
 x = rand(Float32, 640, 608, 3, 1) |> gpu
 y = m(x)
 
@@ -505,7 +505,7 @@ strid = [16, 32, 64]
 x = float.(Images.load.(["horses.jpg"]))
 x = imresize.(x, 640, 640)
 x = channelview.(x)
-x = permutedims.(x, ((2, 3, 1),))
+x = permutedims.(x, ((3, 2, 1),))
 x = stack(x, dims=4) |> gpu
 
 ŷ = m(x)
@@ -514,11 +514,11 @@ ŷ = m(x)
 
 
 img = copy(x[:, :, :, 1]) |> cpu
-img_CHW = permutedims(img, (3, 2, 1))
+img_CHW = permutedims(img, (3, 1, 2))
 img_rgb = colorview(RGB, img_CHW)
 
 out = output_to_box(ŷ, anchors_grid, strid)
-out_nms = non_max_suppression([out]; nc=80, conf_thres=0.000001)[1]
+out_nms = non_max_suppression([out]; nc=80, conf_thres=0.01)[1]
 colors = [RGB{Float32}(1.0, 0.0, 0.0), RGB{Float32}(0.0, 1.0, 0.0), RGB{Float32}(0.0, 0.0, 1.0)]
 
 conf1 = out[5, :, :] .> 0.05

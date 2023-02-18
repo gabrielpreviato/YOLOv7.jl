@@ -2,6 +2,7 @@ using Flux
 using Zygote
 using CUDA
 using Distributions, Random
+using OrderedCollections: OrderedDict
 
 using YOLOv7: Node
 
@@ -441,6 +442,10 @@ function SPPCSPC(c1, c2, g::Dict{String, AbstractArray{Float32}}, pretrained::Bo
     return SPPCSPC(cs[1:4]..., m, cs[5:end]...)
 end
 
+function SPPCSPC(d::OrderedDict{Any, Any})
+    return d["51"]
+end
+
 function (m::SPPCSPC)(x::AbstractArray)
     x1 = m.cv4(m.cv3(m.cv1(x)))
     c1 = cat(x1, [mp(x1) for mp in m.m]...; dims=3)
@@ -603,6 +608,13 @@ function YOLOv7BackboneBlock(depth::Int64, g::Dict{String, AbstractArray{Float32
     return YOLOv7BackboneBlock(depth, mp, cs...)
 end
 
+function YOLOv7BackboneBlock(depth, d::OrderedDict{Any, Any}; off=0)
+    mp = d["$(12+off)"]
+    cs = [d["$(i+off)"] for i in filter(x -> x != 16 && x != 23, 13:24)]
+
+    return YOLOv7BackboneBlock(depth, mp, cs...)
+end
+
 function(m::YOLOv7BackboneBlock)(x::AbstractArray)
     xc1 = m.c1(m.mp(x))
     xc3 = m.c3(m.c2(x))
@@ -676,6 +688,12 @@ function YOLOv7BackboneInit(depth::Int64, g::Dict{String, AbstractArray{Float32}
     return YOLOv7BackboneInit(depth, cs...)
 end
 
+function YOLOv7BackboneInit(depth, d::OrderedDict{Any, Any})
+    cs = [d["$i"] for i in filter(x -> x!=10, 3:11)]
+
+    return YOLOv7BackboneInit(depth, cs...)
+end
+
 function(m::YOLOv7BackboneInit)(x::AbstractArray)
     xc1 = m.c1(x)
     xc2 = m.c2(xc1)
@@ -739,6 +757,17 @@ function YOLOv7Backbone(g::Dict{String, AbstractArray{Float32}}, pretrained::Boo
     ybb1 = YOLOv7BackboneBlock(128, g, pretrained; off=0, start_mp=mps[1])
     ybb2 = YOLOv7BackboneBlock(256, g, pretrained; off=13, start_mp=mps[2])
     ybb3 = YOLOv7BackboneBlock(512, g, pretrained; off=26, half_cut=true, start_mp=mps[3])
+
+    return YOLOv7Backbone(cs..., ybi, ybb1, ybb2, ybb3, p3, p4)
+end
+
+function YOLOv7Backbone(d::OrderedDict{Any, Any}; p3=false, p4=false)
+    cs = [d["$i"] for i in 0:2]
+
+    ybi = YOLOv7BackboneInit(64, d)
+    ybb1 = YOLOv7BackboneBlock(128, d; off=0)
+    ybb2 = YOLOv7BackboneBlock(256, d; off=13)
+    ybb3 = YOLOv7BackboneBlock(512, d; off=26)
 
     return YOLOv7Backbone(cs..., ybi, ybb1, ybb2, ybb3, p3, p4)
 end
@@ -810,6 +839,14 @@ function YOLOv7HeadRouteback(depth::Int, routeback::Symbol, g::Dict{String, Abst
     return YOLOv7HeadRouteback(depth, cs[1], up, cs[2], routeback)
 end
 
+function YOLOv7HeadRouteback(depth, routeback, d::OrderedDict{Any, Any}; off=0)
+    c1 = d["$(52+off)"]
+    up = d["$(53+off)"]
+    c2 = d["$(54+off)"]
+
+    return YOLOv7HeadRouteback(depth, c1, up, c2, routeback)
+end
+
 function(m::YOLOv7HeadRouteback)(x::Dict)
     xup = m.up(m.c1(x[:x]))
     xrb = m.cback(x[m.routeback])
@@ -876,6 +913,12 @@ function YOLOv7HeadBlock(depth::Int64, name::Symbol, g::Dict{String, AbstractArr
     for (w, γ, β, μ, σ²) in zip(ws, γs, βs, μs, σ²s)]
 
     return YOLOv7HeadBlock(depth, name, cs...)
+end
+
+function YOLOv7HeadBlock(depth::Int64, name::Symbol, d::OrderedDict{Any, Any}; off=0)
+    cs = [d["$(i+off)"] for i in filter(x -> x != 62, 56:63)]
+    
+    YOLOv7HeadBlock(depth, name, cs...)
 end
 
 function(m::YOLOv7HeadBlock)(x::AbstractArray)
@@ -960,6 +1003,13 @@ function YOLOv7HeadIncep(depth::Int, routeback::Symbol, g::Dict{String, Abstract
     return YOLOv7HeadIncep(depth, mp, cs..., routeback)
 end
 
+function YOLOv7HeadIncep(depth::Int, routeback::Symbol, d::OrderedDict{Any, Any}; off=0)
+    mp = d["$(76+off)"]
+    cs = [d["$(77+i+off)"] for i in 0:2]
+
+    return YOLOv7HeadIncep(depth, mp, cs..., routeback)
+end
+
 function(m::YOLOv7HeadIncep)(x::Dict)
     xc1 = m.c1(m.mp(x[:x]))
     xc2 = m.c2(x[:x])
@@ -1019,6 +1069,10 @@ function YOLOv7HeadTailRepConv(depth::Int, routeback1::Symbol, routeback2::Symbo
     return YOLOv7HeadTailRepConv(depth, cs..., routeback1, routeback2, routeback3)
 end
 
+function YOLOv7HeadTailRepConv(depth::Int, routeback1::Symbol, routeback2::Symbol, routeback3::Symbol, d::OrderedDict{Any, Any})
+    return YOLOv7HeadTailRepConv(depth, d["102"], d["103"], d["104"], routeback1, routeback2, routeback3)
+end
+
 function(m::YOLOv7HeadTailRepConv)(x::Dict)
     xrepc1 = m.repc1(x[m.routeback1])
     xrepc2 = m.repc2(x[m.routeback2])
@@ -1071,10 +1125,11 @@ struct IDetec
     out_conv
     ia
     im
-    anchors::Tuple
+    anchors
+    anchor_grid
 end
 
-function IDetec(classes::Int; anchors::Tuple=(), channels::Tuple{Vararg{Int}}=())
+function IDetec(classes::Int; anchors=(), anchor_grid=(), channels::Tuple{Vararg{Int}}=())
     outputs = classes + 5
     detec_layers = length(anchors)
     n_anchors = length(anchors[1]) ÷ 2
@@ -1085,10 +1140,10 @@ function IDetec(classes::Int; anchors::Tuple=(), channels::Tuple{Vararg{Int}}=()
     ia = Tuple([ImplicitAddition(ch) for ch in channels])
     im = Tuple([ImplicitMultiplication(outputs * n_anchors) for _ in channels])
 
-    return IDetec(classes, outputs, detec_layers, n_anchors, out_conv, ia, im, anchors)
+    return IDetec(classes, outputs, detec_layers, n_anchors, out_conv, ia, im, anchors, anchor_grid)
 end
 
-function IDetec(classes::Int, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool; anchors::Tuple=(), channels::Tuple{Vararg{Int}}=())
+function IDetec(classes::Int, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool; anchors=(), anchor_grid=(), channels::Tuple{Vararg{Int}}=())
     if !pretrained
         return IDetec(classes, anchors, channels)
     end
@@ -1112,7 +1167,11 @@ function IDetec(classes::Int, g::Dict{String, AbstractArray{Float32}}, pretraine
         ImplicitMultiplication(g["model.105.im.$i.implicit"])
     for i in 0:2]
 
-    return IDetec(classes, 85, 3, 3, out_conv, ia, im, anchors)
+    return IDetec(classes, 85, 3, 3, out_conv, ia, im, anchors, anchor_grid)
+end
+
+function IDetec(d::OrderedDict{Any, Any})
+    d["105"]
 end
 
 function (m::IDetec)(x::Vector{CuArray{Float32, 4, CUDA.Mem.DeviceBuffer}})
@@ -1123,11 +1182,15 @@ function (m::IDetec)(x::Vector{CuArray{Float32, 4, CUDA.Mem.DeviceBuffer}})
     # println(size(y))
     y = [
         let
-            # println(size(m.ia[i].w), " ", typeof(m.ia[i].w))
-            # println(size(x[i]), " ", typeof(x[i]))
+            println(size(x[i]), " ", typeof(x[i]))
+            println(size(m.ia[i].w), " ", typeof(m.ia[i].w))
             # x[i] = m.out_conv[i](m.ia[i](x[i]))
-            # println(size(m.out_conv[i].weight))
-            r = m.out_conv[i](m.ia[i](x[i]))
+            r = m.ia[i](x[i])
+
+            println(size(r), " ", typeof(r))
+            println(size(m.out_conv[i].weight))
+            println(size(m.out_conv[i].bias))
+            r = m.out_conv[i](r)
 
             # println(size(r), typeof(r))
             
