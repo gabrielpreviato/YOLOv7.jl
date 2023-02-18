@@ -4,6 +4,7 @@ using Zygote
 using MLUtils
 using Images
 using ImageDraw
+using Luxor
 using ImageView
 using Statistics
 
@@ -12,7 +13,7 @@ CUDA.allowscalar(false)
 
 using BSON: @save, @load
 
-model = YOLOv7.yolov7_from_torch()
+model = YOLOv7.yolov7_from_torch(pickle_path="yolov7_training.pt")
 m = model.m |> gpu
 testmode!(m, false)
 x = rand(Float32, 640, 608, 3, 1) |> gpu
@@ -250,7 +251,7 @@ function output_to_box(ŷ, anchors_grid, stride)
         no = size(ŷ_i)[1]
         
         grid = reshape(
-            stack([((1:xs)' .* ones(ys))', ((1:ys)' .* ones(xs))]; dims=1),
+            stack([((0:xs-1)' .* ones(ys))', ((0:ys-1)' .* ones(xs))]; dims=1),
             (2, ys, xs, 1, 1))
         # println(grid)
         # grid = repeat(grid, 1, 1, 1, 3, 1)
@@ -502,7 +503,7 @@ strid = [16, 32, 64]
 # r = MLUtils.getobs(dataset, [2500])
 # x, y =  r[1] |> gpu, r[2] |> gpu
 # l = YOLOv7.loss(cl, ŷ, y, 1; nc=2)
-x = float.(Images.load.(["horses.jpg"]))
+x = float.(Images.load.(["bus.jpg"]))
 x = imresize.(x, 640, 640)
 x = channelview.(x)
 x = permutedims.(x, ((3, 2, 1),))
@@ -514,14 +515,15 @@ ŷ = m(x)
 
 
 img = copy(x[:, :, :, 1]) |> cpu
-img_CHW = permutedims(img, (3, 1, 2))
+img_CHW = permutedims(img, (3, 2, 1))
 img_rgb = colorview(RGB, img_CHW)
+a = reinterpret(ARGB32, img)
 
 out = output_to_box(ŷ, anchors_grid, strid)
-out_nms = non_max_suppression([out]; nc=80, conf_thres=0.01)[1]
+out_nms = non_max_suppression([out]; nc=80, conf_thres=0.2)[1]
 colors = [RGB{Float32}(1.0, 0.0, 0.0), RGB{Float32}(0.0, 1.0, 0.0), RGB{Float32}(0.0, 0.0, 1.0)]
 
-conf1 = out[5, :, :] .> 0.05
+conf1 = out[5, :, :] .> 0.1
 d1 = permutedims(out, (2, 3, 1))[conf1, :]
 d1 = trunc.(Int, d1)'
 for i in 1:size(d1)[2]
@@ -530,10 +532,10 @@ for i in 1:size(d1)[2]
     draw!(img_rgb, Polygon(RectanglePoints(x1, y1, x2, y2)), colors[1])
 end
 
-out_nms_trunc = trunc.(Int, out_nms ./ 2) 
+out_nms_trunc = trunc.(Int, out_nms) 
 for i in 1:size(out_nms_trunc)[2]
     x1, y1 = out_nms_trunc[1, i], out_nms_trunc[2, i]
-    x2, y2 = out_nms_trunc[3, i], out_nms_trunc[4, 1]
+    x2, y2 = out_nms_trunc[3, i], out_nms_trunc[4, i]
     draw!(img_rgb, Polygon(RectanglePoints(x1, y1, x2, y2)), colors[2])
 end
 
