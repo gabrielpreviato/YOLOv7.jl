@@ -618,12 +618,12 @@ end
 function(m::YOLOv7BackboneBlock)(x::AbstractArray)
     xc1 = m.c1(m.mp(x))
     xc3 = m.c3(m.c2(x))
-    cat1 = cat(xc1, xc3; dims=3)
+    cat1 = cat(xc3, xc1; dims=3)
     xc4 = m.c4(cat1)
     xc5 = m.c5(cat1)
     xc7 = m.c7(m.c6(xc5))
     xc9 = m.c9(m.c8(xc7))
-    cat2 = cat(xc4, xc5, xc7, xc9; dims=3)
+    cat2 = cat(xc9, xc7, xc5, xc4; dims=3)
     xc10 = m.c10(cat2)
     
     return xc10
@@ -700,7 +700,7 @@ function(m::YOLOv7BackboneInit)(x::AbstractArray)
     xc3 = m.c3(xc1)
     xc5 = m.c5(m.c4(xc3))
     xc7 = m.c7(m.c6(xc5))
-    cat1 = cat(xc2, xc3, xc5, xc7; dims=3)
+    cat1 = cat(xc7, xc5, xc3, xc2; dims=3)
     xc8 = m.c8(cat1)
     
     return xc8
@@ -851,7 +851,7 @@ function(m::YOLOv7HeadRouteback)(x::Dict)
     xup = m.up(m.c1(x[:x]))
     xrb = m.cback(x[m.routeback])
 
-    x[:x] = cat(xup, xrb; dims=3)
+    x[:x] = cat(xrb, xup; dims=3)
     return x
 end
 
@@ -928,7 +928,7 @@ function(m::YOLOv7HeadBlock)(x::AbstractArray)
     xc4 = m.c4(xc3)
     xc5 = m.c5(xc4)
     xc6 = m.c6(xc5)
-    cat1 = cat(xc1, xc2, xc3, xc4, xc5, xc6; dims=3)
+    cat1 = cat(xc6, xc5, xc4, xc3, xc2, xc1; dims=3)
     xc7 = m.c7(cat1)
     
     return xc7
@@ -1015,7 +1015,7 @@ function(m::YOLOv7HeadIncep)(x::Dict)
     xc2 = m.c2(x[:x])
     xc3 = m.c3(xc2)
 
-    x[:x] = cat(xc1, xc3, x[m.routeback]; dims=3)
+    x[:x] = cat(xc3, xc1, x[m.routeback]; dims=3)
     return x
 end
 
