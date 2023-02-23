@@ -1,7 +1,7 @@
 name = "YOLOv7"
 uuid = "a9523b4b-60f2-4b05-86a8-33bf953359c5"
 authors = ["Gabriel Previato <gabriel.previato@gmail.com>"]
-version = "0.1.0"
+version = "0.1.1"
 
 [deps]
 BSON = "fbb218c0-5317-5bc6-957e-2ee96dd4b1f0"
