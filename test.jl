@@ -4,17 +4,32 @@ using Zygote
 using MLUtils
 using Images
 using ImageDraw
+using Luxor
 using ImageView
+using Statistics
+using StatsBase
+using Printf
 
 using CUDA
 CUDA.allowscalar(false)
 
 using BSON: @save, @load
 
-model = YOLOv7.yolov7(pretrained=true)
-m = model.m |> gpu
-x = rand(Float32, 640, 608, 3, 1) |> gpu
-y = m(x)
+anchor_grid = Tuple([
+    [[12 16]; [19 36]; [40 28]],  # P3/8
+    [[36 75]; [76 55]; [72 146]],  # P4/16
+    [[142 110]; [192 243]; [459 401]]
+]) #./ [16, 32, 64]
+
+anchors = anchor_grid ./ [8, 16, 32]
+
+channels=(256, 512, 1024)
+
+# yolomodel = YOLOv7.yolov7_from_torch(;pickle_path="yolov7_training.pt", nc=2, anchors=anchors, anchor_grid=anchor_grid, channels=channels)
+# model = yolomodel.m |> gpu
+# # testmode!(m, false)
+# x = rand(Float32, 640, 640, 3, 1) |> gpu
+# y = m(x)
 
 mapping = Dict(
     "goal" => 1,
@@ -62,26 +77,38 @@ end
 #     [[142 110]; [192 243]; [459 401]]
 # ] ./ [8, 16, 32])
 
-anchors = Tuple([
-    [[0.87646 0.76221]; [0.30786 3.21289]; [5.64453 0.39526]],
-    [[0.27368 2.20898]; [0.39478 3.63867]; [4.15234 0.60596]],
-    [[0.32495 2.86133]; [0.59619 4.11719]; [2.95312 1.13184]]
-    ])
+hyper = Dict{String, Any}("cls_pw"=>1, "obj_pw"=>1, "anchor_t"=>8.0f0, "box"=>0.35f0, "cls"=>0.30f0, "obj"=>0.35f0)
 
 
-anchors = Tuple([
-    [[12 16]; [19 36]; [40 28]],  # P3/8
-    [[36 75]; [76 55]; [72 146]],  # P4/16
-    [[142 110]; [192 243]; [459 401]]
-]) #./ [16, 32, 64]
+BATCHSIZE = 2
+EPOCHS = 20
+# data = DataLoaders.DataLoader(dataset, BATCHSIZE)
+data = MLUtils.DataLoader(dataset, batchsize=BATCHSIZE, shuffle=true)
 
-anchors_grid = anchors # .* [16, 32, 64]
 
-# anchors_grid =  Tuple([[6.0 8.0; 9.5 18.0; 20.0 14.0],
-#                         [18.0 37.5; 38.0 27.5; 36.0 73.0],
-#                         [71.0 55.0; 96.0 121.5; 229.5 200.5]])
+# loss(ŷ, y) = Flux.mse(ŷ, y)
+println("Created data.")
 
-hyper = Dict{String, Any}("cls_pw"=>1, "obj_pw"=>1, "anchor_t"=>8.0f0, "box"=>0.55f0, "cls"=>0.20f0, "obj"=>0.25f0)
+println("Starting training.")
+
+@load "mymodel_preload_2.bson" cpu_model
+
+model = cpu_model |> gpu
+
+# model = m.m |> gpu
+
+opt_backbone = Flux.setup(Flux.Adam(0.0001), model[1:2])
+opt_middle = Flux.setup(Flux.Adam(0.0005), model[3:end-2])
+opt_detec = Flux.setup(Flux.Adam(0.005), model[end-1:end])
+
+opt = (layers=(opt_backbone.layers..., opt_middle.layers..., opt_detec.layers...),)
+
+cl = YOLOv7.ComputeLoss(hyper, model)
+loss(ŷ, y) = YOLOv7.loss(cl, ŷ, y, BATCHSIZE; nc=2)
+
+my_custom_train!(loss, data, opt, model, BATCHSIZE, EPOCHS)
+
+exit(0)
 
 function(m::Flux.Conv)(x::Dict)
     ret = m(x[:x])
@@ -113,26 +140,26 @@ function (m::TestMerge)(x::Vector{CuArray{Float32, 5, CUDA.Mem.DeviceBuffer}})
 end
 
 
-model = Chain(                                                                                                                                                                                  
-    YOLOv7.YOLOv7Backbone(;p3=true, p4=true),
-    YOLOv7.SPPCSPC(1024, 512),
-    YOLOv7.YOLOv7HeadRouteback(512, :p4),
-    YOLOv7.YOLOv7HeadBlock(256, :h1), # 63
-    YOLOv7.YOLOv7HeadRouteback(256, :p3),
-    YOLOv7.YOLOv7HeadBlock(128, :h2), # 75
-    YOLOv7.YOLOv7HeadIncep(128, :h1),
-    YOLOv7.YOLOv7HeadBlock(256, :h3), #88
-    YOLOv7.YOLOv7HeadIncep(256, :sppcspc),
-    YOLOv7.YOLOv7HeadBlock(512, :h4), #101
-    YOLOv7.YOLOv7HeadTailRepConv(128, :h2, :h3, :h4),
-    YOLOv7.IDetec(5; anchors=anchors, channels=(256, 512, 1024)),
-) |> gpu
+# model = Chain(                                                                                                                                                                                  
+#     YOLOv7.YOLOv7Backbone(;p3=true, p4=true),
+#     YOLOv7.SPPCSPC(1024, 512),
+#     YOLOv7.YOLOv7HeadRouteback(512, :p4),
+#     YOLOv7.YOLOv7HeadBlock(256, :h1), # 63
+#     YOLOv7.YOLOv7HeadRouteback(256, :p3),
+#     YOLOv7.YOLOv7HeadBlock(128, :h2), # 75
+#     YOLOv7.YOLOv7HeadIncep(128, :h1),
+#     YOLOv7.YOLOv7HeadBlock(256, :h3), #88
+#     YOLOv7.YOLOv7HeadIncep(256, :sppcspc),
+#     YOLOv7.YOLOv7HeadBlock(512, :h4), #101
+#     YOLOv7.YOLOv7HeadTailRepConv(128, :h2, :h3, :h4),
+#     YOLOv7.IDetec(5; anchors=anchors, channels=(256, 512, 1024)),
+# ) |> gpu
 
-# Model warmup
-x = rand(Float32, 320, 320, 3, 1) |> gpu
-r = MLUtils.getobs(dataset, [1])
-x, y =  r[1] |> gpu, r[2] |> gpu
-ŷ = model(x)
+# # Model warmup
+# x = rand(Float32, 320, 320, 3, 1) |> gpu
+# r = MLUtils.getobs(dataset, [1])
+# x, y =  r[1] |> gpu, r[2] |> gpu
+# ŷ = model(x)
 # y = Float32.([
 #     [1.00000e+00 1.00000e+00 4.98467e-01 5.35664e-01 7.84091e-01 9.28673e-01];
 #     [1.00000e+00 4.0000e+00 4.76484e-01 5.27067e-01 1.92362e-01 1.85786e-01];
@@ -145,7 +172,7 @@ ŷ = model(x)
 #     [1.00000e+00 5.0000e+00 6.36203e-01 2.95479e-01 9.84112e-02 1.23567e-01]
 # ]') |> gpu
 
-l = YOLOv7.loss(cl, ŷ, y, 1; nc=2)
+# l = YOLOv7.loss(cl, ŷ, y, 1; nc=2)
 
 opt_init = Flux.setup(Flux.Adam(0.0001), model[1:end-2])
 opt_end = Flux.setup(Flux.Adam(0.001), model[end-2:end])
@@ -214,7 +241,7 @@ println("Created data.")
 
 println("Starting training.")
 
-@load "mymodel_preload_4.bson" cpu_model
+# @load "mymodel_preload_4.bson" cpu_model
 
 # model = cpu_model |> gpu
 
@@ -248,7 +275,7 @@ function output_to_box(ŷ, anchors_grid, stride)
         no = size(ŷ_i)[1]
         
         grid = reshape(
-            stack([((1:xs)' .* ones(ys))', ((1:ys)' .* ones(xs))]; dims=1),
+            stack([((0:xs-1)' .* ones(ys))', ((0:ys-1)' .* ones(xs))]; dims=1),
             (2, ys, xs, 1, 1))
         # println(grid)
         # grid = repeat(grid, 1, 1, 1, 3, 1)
@@ -495,10 +522,10 @@ end
 # a = rand(Float32, 40, 40, 256, 2)
 # b = rand(Float32, 1, 1, 256, 1)
 strid = [8, 16, 32]
-strid = [16, 32, 64]
+# strid = [16, 32, 64]
 
-# r = MLUtils.getobs(dataset, [2500])
-# x, y =  r[1] |> gpu, r[2] |> gpu
+r = MLUtils.getobs(dataset, [3500])
+x, y =  r[1] |> gpu, r[2] |> gpu
 # l = YOLOv7.loss(cl, ŷ, y, 1; nc=2)
 x = float.(Images.load.(["horses.jpg"]))
 x = imresize.(x, 640, 640)
@@ -506,18 +533,32 @@ x = channelview.(x)
 x = permutedims.(x, ((3, 2, 1),))
 x = stack(x, dims=4) |> gpu
 
-ŷ = m(x)
+m = YOLOv7.yolov7_from_torch()
+model = m.m |> gpu
+
+ŷ = model(x)
+
+fm = YOLOv7.fuse(m)
+fmodel = fm.m |> gpu
+
+fŷ = fmodel(x)
+
+# x .- μ) ./ sqrt.(σ² .+ ϵ)
 
 
 img = copy(x[:, :, :, 1]) |> cpu
 img_CHW = permutedims(img, (3, 2, 1))
 img_rgb = colorview(RGB, img_CHW)
+a = reinterpret(ARGB32, img)
 
-out = output_to_box(ŷ, anchors_grid, strid)
-out_nms = non_max_suppression([out]; nc=80, conf_thres=0.00001)[1]
-colors = [RGB{Float32}(1.0, 0.0, 0.0), RGB{Float32}(0.0, 1.0, 0.0), RGB{Float32}(0.0, 0.0, 1.0)]
+out = output_to_box(fŷ, anchor_grid, strid)
+out_nms = non_max_suppression([out]; nc=2, conf_thres=0.2)[1]
+# colors = [RGB{Float32}(1.0, 0.0, 0.0), RGB{Float32}(0.0, 1.0, 0.0), RGB{Float32}(0.0, 0.0, 1.0)]
 
-conf1 = out[5, :, :] .> 0.0005
+colors = sample(values(Colors.color_names) |> collect, size(m.class_names))
+colors = [RGB{Float32}(c./255.0f0...) for c in colors]
+
+conf1 = out[5, :, :] .> 0.2
 d1 = permutedims(out, (2, 3, 1))[conf1, :]
 d1 = trunc.(Int, d1)'
 for i in 1:size(d1)[2]
@@ -526,14 +567,52 @@ for i in 1:size(d1)[2]
     draw!(img_rgb, Polygon(RectanglePoints(x1, y1, x2, y2)), colors[1])
 end
 
-out_nms_trunc = trunc.(Int, out_nms)
+out_nms_trunc = round.(Int, out_nms) 
+# for i in 1:size(out_nms_trunc)[2]
+#     x1, y1 = out_nms_trunc[1, i], out_nms_trunc[2, i]
+#     x2, y2 = out_nms_trunc[3, i], out_nms_trunc[4, i]
+#     draw!(img_rgb, Polygon(RectanglePoints(x1, y1, x2, y2)), colors[2])
+# end
+gui = imshow(img_rgb)
 for i in 1:size(out_nms_trunc)[2]
     x1, y1 = out_nms_trunc[1, i], out_nms_trunc[2, i]
-    x2, y2 = out_nms_trunc[3, i], out_nms_trunc[4, 1]
-    draw!(img_rgb, Polygon(RectanglePoints(x1, y1, x2, y2)), colors[2])
+    x2, y2 = out_nms_trunc[3, i], out_nms_trunc[4, i]
+    box = AnnotationBox(
+        (x1, y1),
+        (x2, y2);
+        linewidth=2.0,
+        color=colors[out_nms_trunc[6,i]]
+    )
+    annotate!(gui, box)
+
+    fontsize=10
+    if x1 >= 0 && y1 >= fontsize
+        s = @sprintf("%s: %.2f", m.class_names[out_nms_trunc[6,i]], out_nms[5,i])
+        text = AnnotationText(x1+1, y1-fontsize, s;
+            fontsize=fontsize, halign = "left", fontfamily="monospace",
+            # color=colors[out_nms_trunc[6,i]]
+        )
+        annotate!(gui, text)
+        
+        textbox = AnnotationBox(
+            (x1, y1-fontsize*1.5),
+            (x1+length(s)*fontsize*0.8, y1);
+            linewidth=2.0,
+            color=colors[out_nms_trunc[6,i]]
+        )
+        annotate!(gui, textbox)        
+    else
+        text = AnnotationText(x1, y2+fontsize,
+            "$(model.class_names[out_nms_trunc[6,i]])";
+            fontsize=fontsize, halign = "left"
+            )
+        annotate!(gui, text)
+    end
+    
+    # draw!(img_rgb, Polygon(RectanglePoints(x1, y1, x2, y2)), colors[2])
 end
 
-imshow(img_rgb)
+
 
 function build_targets(compute_loss::YOLOv7.ComputeLoss, ŷ, y, x; device=gpu)
     # Build targets for compute_loss(), input targets(image,class,x,y,w,h)

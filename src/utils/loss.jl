@@ -42,7 +42,7 @@ struct ComputeLoss
     autobalance::Bool
     na::Int
     nl::Int
-    anchors::Tuple
+    anchors
     gr::Float32
 end
 

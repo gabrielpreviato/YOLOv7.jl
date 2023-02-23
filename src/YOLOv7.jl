@@ -10,6 +10,7 @@ include("utils/parser.jl")
 include("utils/dataset.jl")
 include("utils/gradient.jl")
 
+include("model/utils.jl")
 include("model/yolo.jl")
 
 println("Imported YOLOv7")
