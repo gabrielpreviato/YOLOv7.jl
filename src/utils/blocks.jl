@@ -3,6 +3,7 @@ using Zygote
 using CUDA
 using Distributions, Random
 using OrderedCollections: OrderedDict
+using LinearAlgebra
 
 using YOLOv7: Node
 
@@ -364,6 +365,32 @@ end
 
 Flux.@functor Conv
 
+function fuse(conv::Flux.Conv, bn::Flux.BatchNorm)
+    w_conv = conv.weight
+    w_bn = reshape(bn.γ ./ sqrt.(bn.ϵ .+ bn.σ²), (1, 1, 1, :))
+
+    w_fusedconv = w_conv .* w_bn
+
+    b_conv = conv.bias == false ? zeros32(size(w_conv)[4]) : conv.bias
+    b_bn = bn.β .- (bn.γ.*bn.μ./sqrt.(bn.ϵ .+ bn.σ²))
+
+    b_fusedconv = w_bn[1, 1, 1, :] .* b_conv + b_bn
+
+    return Flux.Conv(w_fusedconv, b_fusedconv; stride=conv.stride, pad=conv.pad, dilation=conv.dilation)
+end
+
+function fuse(m::Conv)
+    if typeof(m.bn) == Flux.BatchNorm
+        return Conv(
+            fuse(m.conv, m.bn),
+            identity,
+            m.act
+        )
+    else
+        return m
+    end
+end
+
 function (m::Conv)(x::AbstractArray)
     # println(x)
     m.act(m.bn(m.conv(x)))
@@ -409,41 +436,20 @@ function SPPCSPC(c1, c2; n=1, shortcut=false, groups=1, e=0.5, k=(5, 9, 13))
         return SPPCSPC(cv1, cv2, cv3, cv4, m, cv5, cv6, cv7)
 end
 
-function SPPCSPC(c1, c2, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool, n=1, shortcut=false, groups=1, e=0.5, k=(5, 9, 13))
-    if !pretrained
-        return SPPCSPC(c1, c2, n=n, shortcut=shortcut, groups=groups, e=e, k=k)
-    end
-    
-    ws = [
-            flip(g["model.51.cv$(i).conv.weight"])
-        for i in 1:7]
-        γs = [
-            g["model.51.cv$(i).bn.weight"]
-        for i in 1:7]
-        βs = [
-            g["model.51.cv$(i).bn.bias"]
-        for i in 1:7]
-        μs = [
-            g["model.51.cv$(i).bn.running_mean"]
-        for i in 1:7]
-        σ²s = [
-            g["model.51.cv$(i).bn.running_var"]
-        for i in 1:7]
-   
-        cs = [
-            Conv(
-                Flux.Conv(w, false; stride=1, pad=SamePad()),
-                Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, true, length(γ))
-            )
-        for (w, γ, β, μ, σ²) in zip(ws, γs, βs, μs, σ²s)]
-
-    m = [Flux.MaxPool((x, x); stride=1, pad=x÷2) for x in k]
-
-    return SPPCSPC(cs[1:4]..., m, cs[5:end]...)
-end
-
 function SPPCSPC(d::OrderedDict{Any, Any})
     return d["51"]
+end
+
+function fuse(m::SPPCSPC)
+    cv1 = fuse(m.cv1)
+    cv2 = fuse(m.cv2)
+    cv3 = fuse(m.cv3)
+    cv4 = fuse(m.cv4)
+    cv5 = fuse(m.cv5)
+    cv6 = fuse(m.cv6)
+    cv7 = fuse(m.cv7)
+
+    return SPPCSPC(cv1, cv2, cv3, cv4, m.m, cv5, cv6, cv7)
 end
 
 function (m::SPPCSPC)(x::AbstractArray)
@@ -468,6 +474,7 @@ struct RepConv
     rbr_identity::Union{Nothing, BatchNorm}
     rbr_dense::Chain
     rbr_1x1::Chain
+    rbr_reparam::Union{Nothing, Flux.Conv}
     act::Function
 end
 
@@ -487,8 +494,31 @@ function RepConv(c1::Int, c2::Int; k=3, s=1, p=nothing, groups=1, act=true)
         Flux.Conv((1, 1), c1 => c2; stride=s, pad=0, groups=groups, bias=false),
         BatchNorm(c2)
     )
+    rbr_reparam = nothing
 
-    return RepConv(rbr_identity, rbr_dense, rbr_1x1, activation)
+    return RepConv(rbr_identity, rbr_dense, rbr_1x1, rbr_reparam, activation)
+end
+
+function fuse(m::RepConv)
+    rbr_dense = fuse(m.rbr_dense[1], m.rbr_dense[2])
+    rbr_1x1 = fuse(m.rbr_1x1[1], m.rbr_1x1[2])
+    
+    bias_1x1 = rbr_1x1.bias
+    weight_1x1_expanded = pad_zeros(rbr_1x1.weight, (1, 1, 1, 1); dims=(1, 2))
+
+    if m.rbr_identity === nothing
+        bias_identity_expanded = zeros_like(bias_1x1)
+        weight_identity_expanded = zeros_like(weight_1x1_expanded)
+    else
+        exit(0)
+    end
+
+    weight_reparam = rbr_dense.weight .+ weight_1x1_expanded .+ weight_identity_expanded
+    bias_reparam = rbr_dense.bias .+ bias_1x1 .+ bias_identity_expanded
+
+    rbr_reparam = Flux.Conv(weight_reparam, bias_reparam; stride=rbr_dense.stride, pad=rbr_dense.pad, dilation=rbr_dense.dilation)
+
+    return RepConv(nothing, m.rbr_dense, m.rbr_1x1, rbr_reparam, m.act)
 end
 
 function RepConv(w::Tuple{AbstractArray, AbstractArray}, b::NTuple)
@@ -507,14 +537,19 @@ function RepConv(w::Tuple{AbstractArray, AbstractArray}, b::NTuple)
         Flux.Conv(w[2], false; stride=1, pad=SamePad()),
         Flux.BatchNorm(identity, β[2], γ[2], μ[2], σ²[2], ϵ, momentum, true, true, true, length(γ[2]))
     )
+    rbr_reparam = nothing
 
-    return RepConv(rbr_identity, rbr_dense, rbr_1x1, activation)
+    return RepConv(rbr_identity, rbr_dense, rbr_1x1, rbr_reparam, activation)
 end
 
 function (m::RepConv)(x::AbstractArray)
     id_out = 0
     if m.rbr_identity !== nothing
         id_out = m.rbr_identity(x)
+    end
+
+    if m.rbr_reparam !== nothing
+        return m.act(m.rbr_reparam(x))
     end
 
     # println(size(m.rbr_dense(x)))
@@ -570,49 +605,26 @@ function YOLOv7BackboneBlock(depth::Int64; half_cut=false, start_mp=true)
     return YOLOv7BackboneBlock(depth, mp, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10)
 end
 
-function YOLOv7BackboneBlock(depth::Int64, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool; off=0, half_cut=false, start_mp=true)
-    if !pretrained
-        return YOLOv7BackboneBlock(depth, half_cut=half_cut, start_mp=start_mp)
-    else
-        stride = [1, 1, 2, 1, 1, 1, 1, 1, 1, 1]
-        ws = [
-            flip(g["model.$(13+i+off).conv.weight"])
-        for i in filter(x -> x != 3 && x != 10, 0:11)]
-        γs = [
-            g["model.$(13+i+off).bn.weight"]
-        for i in filter(x -> x != 3 && x != 10, 0:11)]
-        βs = [
-            g["model.$(13+i+off).bn.bias"]
-        for i in filter(x -> x != 3 && x != 10, 0:11)]
-        μs = [
-            g["model.$(13+i+off).bn.running_mean"]
-        for i in filter(x -> x != 3 && x != 10, 0:11)]
-        σ²s = [
-            g["model.$(13+i+off).bn.running_var"]
-        for i in filter(x -> x != 3 && x != 10, 0:11)]
-   
-        cs = [
-            Conv(
-                Flux.Conv(w, false; stride=s, pad=SamePad()),
-                Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, true, length(γ))
-            )
-        for (w, s, γ, β, μ, σ²) in zip(ws, stride, γs, βs, μs, σ²s)]
-    end
-    
-    if start_mp
-        mp = MaxPool((2, 2))
-    else
-        mp = MaxPool((1, 1))
-    end
-
-    return YOLOv7BackboneBlock(depth, mp, cs...)
-end
-
 function YOLOv7BackboneBlock(depth, d::OrderedDict{Any, Any}; off=0)
     mp = d["$(12+off)"]
     cs = [d["$(i+off)"] for i in filter(x -> x != 16 && x != 23, 13:24)]
 
     return YOLOv7BackboneBlock(depth, mp, cs...)
+end
+
+function fuse(m::YOLOv7BackboneBlock)
+    c1 = fuse(m.c1)
+    c2 = fuse(m.c2)
+    c3 = fuse(m.c3)
+    c4 = fuse(m.c4)
+    c5 = fuse(m.c5)
+    c6 = fuse(m.c6)
+    c7 = fuse(m.c7)
+    c8 = fuse(m.c8)
+    c9 = fuse(m.c9)
+    c10 = fuse(m.c10)
+
+    return YOLOv7BackboneBlock(m.depth, m.mp, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10)
 end
 
 function(m::YOLOv7BackboneBlock)(x::AbstractArray)
@@ -656,42 +668,23 @@ function YOLOv7BackboneInit(depth::Int64)
     return YOLOv7BackboneInit(depth, c1, c2, c3, c4, c5, c6, c7, c8)
 end
 
-function YOLOv7BackboneInit(depth::Int64, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool)
-    if !pretrained
-        return YOLOv7BackboneInit(depth)
-    else
-        stride = [2, 1, 1, 1, 1, 1, 1, 1]
-        ws = [
-            flip(g["model.$(3+i).conv.weight"])
-        for i in filter(x -> x!=7, 0:8)]
-        γs = [
-            g["model.$(3+i).bn.weight"]
-        for i in filter(x -> x!=7, 0:8)]
-        βs = [
-            g["model.$(3+i).bn.bias"]
-        for i in filter(x -> x!=7, 0:8)]
-        μs = [
-            g["model.$(3+i).bn.running_mean"]
-        for i in filter(x -> x!=7, 0:8)]
-        σ²s = [
-            g["model.$(3+i).bn.running_var"]
-        for i in filter(x -> x!=7, 0:8)]
-   
-        cs = [
-            Conv(
-                Flux.Conv(w, false; stride=s, pad=SamePad()),
-                Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, true, length(γ))
-            )
-        for (w, s, γ, β, μ, σ²) in zip(ws, stride, γs, βs, μs, σ²s)]
-    end
-
-    return YOLOv7BackboneInit(depth, cs...)
-end
-
 function YOLOv7BackboneInit(depth, d::OrderedDict{Any, Any})
     cs = [d["$i"] for i in filter(x -> x!=10, 3:11)]
 
     return YOLOv7BackboneInit(depth, cs...)
+end
+
+function fuse(m::YOLOv7BackboneInit)
+    c1 = fuse(m.c1)
+    c2 = fuse(m.c2)
+    c3 = fuse(m.c3)
+    c4 = fuse(m.c4)
+    c5 = fuse(m.c5)
+    c6 = fuse(m.c6)
+    c7 = fuse(m.c7)
+    c8 = fuse(m.c8)
+
+    return YOLOv7BackboneInit(m.depth, c1, c2, c3, c4, c5, c6, c7, c8)
 end
 
 function(m::YOLOv7BackboneInit)(x::AbstractArray)
@@ -720,47 +713,6 @@ struct YOLOv7Backbone
     p4::Bool
 end
 
-function YOLOv7Backbone(g::Dict{String, AbstractArray{Float32}}, pretrained::Bool; mps::Array{Bool, 1}=[true, true, true], p3=false, p4=false)
-    if pretrained
-        stride = [1, 2, 1]
-        ws = [
-            flip(g["model.$(0+i).conv.weight"])
-        for i in 0:2]
-        γs = [
-            g["model.$(0+i).bn.weight"]
-        for i in 0:2]
-        βs = [
-            g["model.$(0+i).bn.bias"]
-        for i in 0:2]
-        μs = [
-            g["model.$(0+i).bn.running_mean"]
-        for i in 0:2]
-        σ²s = [
-            g["model.$(0+i).bn.running_var"]
-        for i in 0:2]
-   
-        cs = [
-            Conv(
-                Flux.Conv(w, false; stride=s, pad=SamePad()),
-                Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, true, length(γ))
-            )
-        for (w, s, γ, β, μ, σ²) in zip(ws, stride, γs, βs, μs, σ²s)]
-    else
-        cs = [
-            Conv(3 => 32, 3, 1)
-            Conv(32 => 64, 3, 2)
-            Conv(64 => 64, 3, 1)
-        ]
-    end
-
-    ybi = YOLOv7BackboneInit(64, g, pretrained)
-    ybb1 = YOLOv7BackboneBlock(128, g, pretrained; off=0, start_mp=mps[1])
-    ybb2 = YOLOv7BackboneBlock(256, g, pretrained; off=13, start_mp=mps[2])
-    ybb3 = YOLOv7BackboneBlock(512, g, pretrained; off=26, half_cut=true, start_mp=mps[3])
-
-    return YOLOv7Backbone(cs..., ybi, ybb1, ybb2, ybb3, p3, p4)
-end
-
 function YOLOv7Backbone(d::OrderedDict{Any, Any}; p3=false, p4=false)
     cs = [d["$i"] for i in 0:2]
 
@@ -770,6 +722,18 @@ function YOLOv7Backbone(d::OrderedDict{Any, Any}; p3=false, p4=false)
     ybb3 = YOLOv7BackboneBlock(512, d; off=26)
 
     return YOLOv7Backbone(cs..., ybi, ybb1, ybb2, ybb3, p3, p4)
+end
+
+function fuse(m::YOLOv7Backbone)
+    c1 = fuse(m.c1)
+    c2 = fuse(m.c2)
+    c3 = fuse(m.c3)
+    ybi = fuse(m.ybi)
+    ybb1 = fuse(m.ybb1)
+    ybb2 = fuse(m.ybb2)
+    ybb3 = fuse(m.ybb3)
+
+    return YOLOv7Backbone(c1, c2, c3, ybi, ybb1, ybb2, ybb3, m.p3, m.p4)
 end
 
 function(m::YOLOv7Backbone)(x::AbstractArray)
@@ -807,44 +771,19 @@ function YOLOv7HeadRouteback(depth::Int, routeback::Symbol)
     return YOLOv7HeadRouteback(depth, c1, up, cback, routeback)
 end
 
-function YOLOv7HeadRouteback(depth::Int, routeback::Symbol, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool; off=0)
-    if !pretrained
-        return YOLOv7HeadRouteback(depth, routeback)
-    end
-    
-    ws = [
-        flip(g["model.$(52+i+off).conv.weight"])
-    for i in [0, 2]]
-    γs = [
-        g["model.$(52+i+off).bn.weight"]
-    for i in [0, 2]]
-    βs = [
-        g["model.$(52+i+off).bn.bias"]
-    for i in [0, 2]]
-    μs = [
-        g["model.$(52+i+off).bn.running_mean"]
-    for i in [0, 2]]
-    σ²s = [
-        g["model.$(52+i+off).bn.running_var"]
-    for i in [0, 2]]
-
-    cs = [
-        Conv(
-            Flux.Conv(w, false; stride=1, pad=SamePad()),
-            Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, true, length(γ))
-        )
-    for (w, γ, β, μ, σ²) in zip(ws, γs, βs, μs, σ²s)]
-    up = Upsample(2, :nearest)
-
-    return YOLOv7HeadRouteback(depth, cs[1], up, cs[2], routeback)
-end
-
 function YOLOv7HeadRouteback(depth, routeback, d::OrderedDict{Any, Any}; off=0)
     c1 = d["$(52+off)"]
     up = d["$(53+off)"]
-    c2 = d["$(54+off)"]
+    cback = d["$(54+off)"]
 
-    return YOLOv7HeadRouteback(depth, c1, up, c2, routeback)
+    return YOLOv7HeadRouteback(depth, c1, up, cback, routeback)
+end
+
+function fuse(m::YOLOv7HeadRouteback)
+    c1 = fuse(m.c1)
+    cback = fuse(m.cback)
+
+    return YOLOv7HeadRouteback(m.depth, c1, m.up, cback, m.routeback)
 end
 
 function(m::YOLOv7HeadRouteback)(x::Dict)
@@ -884,41 +823,22 @@ function YOLOv7HeadBlock(depth::Int64, name::Symbol) # 256
     return YOLOv7HeadBlock(depth, name, c1, c2, c3, c4, c5, c6, c7)
 end
 
-function YOLOv7HeadBlock(depth::Int64, name::Symbol, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool; off=0) # 256
-    if !pretrained
-        return YOLOv7HeadBlock(depth, name)
-    end
-
-    ws = [
-        flip(g["model.$(56+i+off).conv.weight"])
-    for i in filter(x -> x != 6, 0:7)]
-    γs = [
-        g["model.$(56+i+off).bn.weight"]
-    for i in filter(x -> x != 6, 0:7)]
-    βs = [
-        g["model.$(56+i+off).bn.bias"]
-    for i in filter(x -> x != 6, 0:7)]
-    μs = [
-        g["model.$(56+i+off).bn.running_mean"]
-    for i in filter(x -> x != 6, 0:7)]
-    σ²s = [
-        g["model.$(56+i+off).bn.running_var"]
-    for i in filter(x -> x != 6, 0:7)]
-
-    cs = [
-        Conv(
-            Flux.Conv(w, false; stride=1, pad=SamePad()),
-            Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, true, length(γ))
-        )
-    for (w, γ, β, μ, σ²) in zip(ws, γs, βs, μs, σ²s)]
-
-    return YOLOv7HeadBlock(depth, name, cs...)
-end
-
 function YOLOv7HeadBlock(depth::Int64, name::Symbol, d::OrderedDict{Any, Any}; off=0)
     cs = [d["$(i+off)"] for i in filter(x -> x != 62, 56:63)]
     
     YOLOv7HeadBlock(depth, name, cs...)
+end
+
+function fuse(m::YOLOv7HeadBlock)
+    c1 = fuse(m.c1)
+    c2 = fuse(m.c2)
+    c3 = fuse(m.c3)
+    c4 = fuse(m.c4)
+    c5 = fuse(m.c5)
+    c6 = fuse(m.c6)
+    c7 = fuse(m.c7)
+
+    return YOLOv7HeadBlock(m.depth, m.name, c1, c2, c3, c4, c5, c6, c7)
 end
 
 function(m::YOLOv7HeadBlock)(x::AbstractArray)
@@ -969,45 +889,19 @@ function YOLOv7HeadIncep(depth::Int, routeback::Symbol)
     return YOLOv7HeadIncep(depth, mp, c1, c2, c3, routeback)
 end
 
-function YOLOv7HeadIncep(depth::Int, routeback::Symbol, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool; off=0, strides=[1, 1, 2])
-    if !pretrained
-        return YOLOv7HeadIncep(depth, routeback)
-    end
-
-    mp = MaxPool((2, 2))
-    
-    ws = [
-        flip(g["model.$(77+i+off).conv.weight"])
-    for i in 0:2]
-    γs = [
-        g["model.$(77+i+off).bn.weight"]
-    for i in 0:2]
-    βs = [
-        g["model.$(77+i+off).bn.bias"]
-    for i in 0:2]
-    μs = [
-        g["model.$(77+i+off).bn.running_mean"]
-    for i in 0:2]
-    σ²s = [
-        g["model.$(77+i+off).bn.running_var"]
-    for i in 0:2]
-
-    cs = [
-        Conv(
-            Flux.Conv(w, false; stride=s, pad=SamePad()),
-            Flux.BatchNorm(identity, β, γ, μ, σ², ϵ, momentum, true, true, true, length(γ))
-        )
-    for (w, s, γ, β, μ, σ²) in zip(ws, strides, γs, βs, μs, σ²s)]
-    
-
-    return YOLOv7HeadIncep(depth, mp, cs..., routeback)
-end
-
 function YOLOv7HeadIncep(depth::Int, routeback::Symbol, d::OrderedDict{Any, Any}; off=0)
     mp = d["$(76+off)"]
     cs = [d["$(77+i+off)"] for i in 0:2]
 
     return YOLOv7HeadIncep(depth, mp, cs..., routeback)
+end
+
+function fuse(m::YOLOv7HeadIncep)
+    c1 = fuse(m.c1)
+    c2 = fuse(m.c2)
+    c3 = fuse(m.c3)
+
+    return YOLOv7HeadIncep(m.depth, m.mp, c1, c2, c3, m.routeback)
 end
 
 function(m::YOLOv7HeadIncep)(x::Dict)
@@ -1039,38 +933,16 @@ function YOLOv7HeadTailRepConv(depth::Int, routeback1::Symbol, routeback2::Symbo
     return YOLOv7HeadTailRepConv(depth, repc1, repc2, repc3, routeback1, routeback2, routeback3)
 end
 
-function YOLOv7HeadTailRepConv(depth::Int, routeback1::Symbol, routeback2::Symbol, routeback3::Symbol, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool)
-    if !pretrained
-        return YOLOv7HeadTailRepConv(depth, routeback1, routeback2, routeback3)
-    end
-
-    ws = [
-        (flip(g["model.$(102+i).rbr_dense.0.weight"]), flip(g["model.$(102+i).rbr_1x1.0.weight"]))
-    for i in 0:2]
-    γs = [
-        (g["model.$(102+i).rbr_dense.1.weight"], g["model.$(102+i).rbr_1x1.1.weight"])
-    for i in 0:2]
-    βs = [
-        (g["model.$(102+i).rbr_dense.1.bias"], g["model.$(102+i).rbr_1x1.1.bias"])
-    for i in 0:2]
-    μs = [
-        (g["model.$(102+i).rbr_dense.1.running_mean"], g["model.$(102+i).rbr_1x1.1.running_mean"])
-    for i in 0:2]
-    σ²s = [
-        (g["model.$(102+i).rbr_dense.1.running_var"], g["model.$(102+i).rbr_1x1.1.running_var"])
-    for i in 0:2]
-
-    cs = [
-        RepConv(
-            w, (γ, β, μ, σ²)
-        )
-    for (w, γ, β, μ, σ²) in zip(ws, γs, βs, μs, σ²s)]
-
-    return YOLOv7HeadTailRepConv(depth, cs..., routeback1, routeback2, routeback3)
-end
-
 function YOLOv7HeadTailRepConv(depth::Int, routeback1::Symbol, routeback2::Symbol, routeback3::Symbol, d::OrderedDict{Any, Any})
     return YOLOv7HeadTailRepConv(depth, d["102"], d["103"], d["104"], routeback1, routeback2, routeback3)
+end
+
+function fuse(m::YOLOv7HeadTailRepConv)
+    repc1 = fuse(m.repc1)
+    repc2 = fuse(m.repc2)
+    repc3 = fuse(m.repc3)
+
+    return YOLOv7HeadTailRepConv(m.depth, repc1, repc2, repc3, m.routeback1, m.routeback2, m.routeback3)
 end
 
 function(m::YOLOv7HeadTailRepConv)(x::Dict)
@@ -1129,6 +1001,29 @@ struct IDetec
     anchor_grid
 end
 
+function fuse(m::IDetec)
+    out_conv = []
+    ia = []
+    im = []
+    for i in 1:length(m.out_conv)
+        # Fuse ImplicitA and Conv
+        bias = m.out_conv[i].bias .+ (m.ia[i].w[1, :, :, 1] * m.out_conv[i].weight[1, 1, :, :])'
+        ia_w = zeros_like(m.ia[i].w)
+
+        # Fuse ImplicitM and Conv
+        bias .*= m.im[i].w[1, 1, :, 1]
+        weight = m.out_conv[i].weight .* reshape(m.im[i].w, (1, 1, 1, length(m.im[i].w)))
+        im_w = ones_like(m.im[i].w)
+
+        push!(out_conv, Flux.Conv(weight, bias[:, 1]; stride=m.out_conv[i].stride, pad=m.out_conv[i].pad, dilation=m.out_conv[i].dilation))
+        push!(ia, ImplicitAddition(ia_w))
+        push!(im, ImplicitMultiplication(im_w))
+    end
+
+    return IDetec(m.classes, m.outputs, m.detec_layers, m.n_anchors,
+                    Tuple(out_conv), Tuple(ia), Tuple(im), m.anchors, m.anchor_grid)
+end
+
 function IDetec(classes::Int; anchors=(), anchor_grid=(), channels::Tuple{Vararg{Int}}=())
     outputs = classes + 5
     detec_layers = length(anchors)
@@ -1143,33 +1038,6 @@ function IDetec(classes::Int; anchors=(), anchor_grid=(), channels::Tuple{Vararg
     return IDetec(classes, outputs, detec_layers, n_anchors, out_conv, ia, im, anchors, anchor_grid)
 end
 
-function IDetec(classes::Int, g::Dict{String, AbstractArray{Float32}}, pretrained::Bool; anchors=(), anchor_grid=(), channels::Tuple{Vararg{Int}}=())
-    if !pretrained
-        return IDetec(classes, anchors, channels)
-    end
-
-    ws = [
-        flip(g["model.105.m.$i.weight"])
-    for i in 0:2]
-    bs = [
-        g["model.105.m.$i.bias"]
-    for i in 0:2]
-
-    out_conv = [
-        Flux.Conv(w, b; stride=1, pad=SamePad())
-    for (w, b) in zip(ws, bs)]
-
-    ia = [
-        ImplicitAddition(g["model.105.ia.$i.implicit"])
-    for i in 0:2]
-
-    im = [
-        ImplicitMultiplication(g["model.105.im.$i.implicit"])
-    for i in 0:2]
-
-    return IDetec(classes, 85, 3, 3, out_conv, ia, im, anchors, anchor_grid)
-end
-
 function IDetec(d::OrderedDict{Any, Any})
     d["105"]
 end
@@ -1182,14 +1050,14 @@ function (m::IDetec)(x::Vector{CuArray{Float32, 4, CUDA.Mem.DeviceBuffer}})
     # println(size(y))
     y = [
         let
-            println(size(x[i]), " ", typeof(x[i]))
-            println(size(m.ia[i].w), " ", typeof(m.ia[i].w))
+            # println(size(x[i]), " ", typeof(x[i]))
+            # println(size(m.ia[i].w), " ", typeof(m.ia[i].w))
             # x[i] = m.out_conv[i](m.ia[i](x[i]))
             r = m.ia[i](x[i])
 
-            println(size(r), " ", typeof(r))
-            println(size(m.out_conv[i].weight))
-            println(size(m.out_conv[i].bias))
+            # println(size(r), " ", typeof(r))
+            # println(size(m.out_conv[i].weight))
+            # println(size(m.out_conv[i].bias))
             r = m.out_conv[i](r)
 
             # println(size(r), typeof(r))

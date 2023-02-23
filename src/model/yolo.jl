@@ -12,7 +12,17 @@ using OrderedCollections
 struct yolov7
     name::String
     pretrained::Bool
+    class_names
     m
+end
+
+function fuse(m::yolov7)
+    layers = []
+    for layer in m.m
+        push!(layers, fuse(layer))
+    end
+
+    return yolov7(m.name, m.pretrained, m.class_names, Chain(layers))
 end
 
 function yolov7(;name="yolov7", onnx_path="yolov7_training.onnx", pretrained=false)
@@ -59,7 +69,7 @@ function yolov7(;name="yolov7", onnx_path="yolov7_training.onnx", pretrained=fal
     #     load_weights(model)
     # end
 
-    return yolov7(name, pretrained, model)
+    return yolov7(name, pretrained, [], model)
 end
 
 function load_pickle(pickle_path)
@@ -126,6 +136,7 @@ function load_pickle(pickle_path)
                 nothing,
                 Flux.Chain(rbr_dense_conv, rbr_dense_bn),
                 Flux.Chain(rbr_1x1_conv, rbr_1x1_bn),
+                nothing,
                 act
             )
             
@@ -150,11 +161,16 @@ function load_pickle(pickle_path)
         end
     end
 
-    return model_flux
+    return model_flux, pt["model"].args[2]["names"], pt["model"].args[2]["nc"]
 end
 
-function yolov7_from_torch(;name="yolov7", pickle_path="yolov7_training.pt")
-    d::OrderedDict = load_pickle(pickle_path)
+function yolov7_from_torch(;name="yolov7", pickle_path="yolov7_training.pt", nc=80, anchors=(), anchor_grid=(), channels=())
+    d::OrderedDict, class_names, nc_model = load_pickle(pickle_path)
+
+    keep_head = false
+    if nc_model == nc
+        keep_head = true
+    end
 
     model = Chain(                                                                                                                                                                                  
         YOLOv7.YOLOv7Backbone(d; p3=true, p4=true),
@@ -167,66 +183,9 @@ function yolov7_from_torch(;name="yolov7", pickle_path="yolov7_training.pt")
         YOLOv7.YOLOv7HeadBlock(256, :h3, d; off=25), #88
         YOLOv7.YOLOv7HeadIncep(256, :sppcspc, d; off=13),
         YOLOv7.YOLOv7HeadBlock(512, :h4, d; off=38), #101
-        YOLOv7.YOLOv7HeadTailRepConv(128, :h2, :h3, :h4, d),
-        YOLOv7.IDetec(d),
+        keep_head ? YOLOv7.YOLOv7HeadTailRepConv(128, :h2, :h3, :h4, d) : YOLOv7.YOLOv7HeadTailRepConv(128, :h2, :h3, :h4),
+        keep_head ? YOLOv7.IDetec(d) : YOLOv7.IDetec(nc; anchors=anchors, anchor_grid=anchor_grid, channels=channels),
     )
 
-    # if pretrained
-    #     load_weights(model)
-    # end
-
-    return yolov7(name, true, model)
-end
-
-function load_weights(model::Chain, )
-    f = ONNX.readproto(open(onnx_path), ONNX.Proto.ModelProto())
-    g = ONNX.convert(f.graph)
-
-    for block in model
-        load_weights(block, g)
-    end
-end
-
-function load_weights(model, g)
-    return
-end
-
-function load_weights(model::YOLOv7Backbone, g)
-    model.c1.conv.weight = g.initializer["model.model.0.conv.weight"]
-    model.c2.conv.weight = g.initializer["model.model.1.conv.weight"]
-    model.c3.conv.weight = g.initializer["model.model.2.conv.weight"]
-
-    model.c1.conv.bias = g.initializer["model.model.0.conv.bias"]
-    model.c2.conv.bias = g.initializer["model.model.1.conv.bias"]
-    model.c3.conv.bias = g.initializer["model.model.2.conv.bias"]
-
-    load_weights(model.ybi, g)
-    
-    load_weights(model.ybb1, 0, g)
-    load_weights(model.ybb2, 13, g)
-    load_weights(model.ybb3, 26, g)
-end
-
-function load_weights(model::YOLOv7BackboneInit, g)
-    model.c1.conv.weight = g.initializer["model.model.3.conv.weight"]
-    model.c2.conv.weight = g.initializer["model.model.4.conv.weight"]
-    model.c3.conv.weight = g.initializer["model.model.5.conv.weight"]
-    model.c4.conv.weight = g.initializer["model.model.6.conv.weight"]
-    model.c5.conv.weight = g.initializer["model.model.7.conv.weight"]
-    model.c6.conv.weight = g.initializer["model.model.8.conv.weight"]
-    model.c7.conv.weight = g.initializer["model.model.9.conv.weight"]
-    model.c8.conv.weight = g.initializer["model.model.11.conv.weight"]
-end
-
-function load_weights(model::YOLOv7BackboneBlock, offset, g)
-    model.c1.conv.weight = g.initializer["model.model.$(13 + offset).conv.weight"]
-    model.c2.conv.weight = g.initializer["model.model.$(14 + offset).conv.weight"]
-    model.c3.conv.weight = g.initializer["model.model.$(15 + offset).conv.weight"]
-    model.c4.conv.weight = g.initializer["model.model.$(17 + offset).conv.weight"]
-    model.c5.conv.weight = g.initializer["model.model.$(18 + offset).conv.weight"]
-    model.c6.conv.weight = g.initializer["model.model.$(19 + offset).conv.weight"]
-    model.c7.conv.weight = g.initializer["model.model.$(20 + offset).conv.weight"]
-    model.c8.conv.weight = g.initializer["model.model.$(21 + offset).conv.weight"]
-    model.c9.conv.weight = g.initializer["model.model.$(22 + offset).conv.weight"]
-    model.c10.conv.weight = g.initializer["model.model.$(24 + offset).conv.weight"]
+    return yolov7(name, true, class_names, model)
 end
