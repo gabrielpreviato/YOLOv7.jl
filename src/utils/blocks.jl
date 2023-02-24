@@ -713,6 +713,19 @@ struct YOLOv7Backbone
     p4::Bool
 end
 
+function YOLOv7Backbone(;p3=false, p4=false)
+    c1 = Conv(3=>32, 3, 1)
+    c2 = Conv(32=>64, 3, 2)
+    c3 = Conv(64=>64, 3, 1)
+
+    ybi = YOLOv7BackboneInit(64)
+    ybb1 = YOLOv7BackboneBlock(128)
+    ybb2 = YOLOv7BackboneBlock(256)
+    ybb3 = YOLOv7BackboneBlock(512; half_cut=true)
+
+    return YOLOv7Backbone(c1, c2, c3, ybi, ybb1, ybb2, ybb3, p3, p4)
+end
+
 function YOLOv7Backbone(d::OrderedDict{Any, Any}; p3=false, p4=false)
     cs = [d["$i"] for i in 0:2]
 
