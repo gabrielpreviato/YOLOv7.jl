@@ -1,6 +1,5 @@
 using YOLOv7
 
-using Flux
 using Test
 
 @testset "yolov7" begin
