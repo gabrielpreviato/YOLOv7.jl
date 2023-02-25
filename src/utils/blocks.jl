@@ -12,341 +12,6 @@ momentum = 0.970f0
 
 flip(x) = x[end:-1:1, end:-1:1, :, :]
 
-# custom split layer
-struct Split{T}
-  paths::T
-end
-
-Split(paths...) = Split(paths)
-
-Flux.@functor Split
-
-(m::Split)(x::AbstractArray) = map(f -> f(x), m.paths)
-
-struct YOLOChain
-    nodes::Vector{Node}
-    components::Vector{Any}
-    # results::Vector{AbstractArray}
-    e::Expr
-end
-
-function YOLOChain(nodes::Vector{Node}, components::Vector{Any})
-    # results::Vector{AbstractArray}
-    x = rand(Float32, 160, 160, 3, 1)
-    
-    nodes_2_gen = []
-    size_2_gen = []
-    for n in nodes
-        if length(n.op[2]) == 1
-            push!(nodes_2_gen, [n.op[2]])
-            push!(size_2_gen, Array{Int64, length(n.op[2])}(undef, 1))
-        else
-            push!(nodes_2_gen, n.op[2])
-            push!(size_2_gen, Array{Int64, length(n.op[2])}(undef, [1 for _ in 1:length(n.op[2])]...))
-        end
-    end
-    e = _generate_chain(Tuple(components), Tuple(nodes_2_gen), Tuple(size_2_gen), x)
-
-    return YOLOChain(nodes, components, e)
-end
-
-Flux.@functor YOLOChain
-
-function Flux.trainable(m::YOLOChain)
-    (m.components,)
-end
-
-# function YOLOChain(nodes::Vector{Node}, components::Vector{Any})
-#     # results = []
-#     # x = randn(Float32, 640, 640, 3, 1)
-#     # for (node, component) in zip(nodes, components)
-#     #     if length(node.parents) == 0
-#     #         push!(results, x)
-#     #     else
-#     #         # println(node)
-#     #         # println(component)
-#     #         # println(node.op[2])
-#     #         # println(size(results[node.op[2][1]]))
-#     #         push!(results, component(results[node.op[2]]...))
-#     #     end
-#     #     # println(length(results))
-#     # end
-
-#     return YOLOChain(nodes, components)
-# end
-
-Base.getindex(c::YOLOChain, i::Int64) = YOLOChain(c.nodes[i], c.components[i])
-
-Base.getindex(c::YOLOChain, i::UnitRange{Int64}) = YOLOChain(c.nodes[i], c.components[i])
-
-(m::YOLOChain)(x::AbstractArray) = _apply_chain(Tuple(m.components), Tuple(m.nodes), x)
-# (m::YOLOChain)(x::AbstractArray) = _apply_chain(Tuple(m.components), x)
-# (m::YOLOChain)(x::AbstractArray) = _apply_chain(Tuple(m.components), m.e, x)
-
-@generated function _apply_chain(layers::Tuple{Vararg{<:Any,N}}, e, x) where {N}
-    Expr(:block, e...)
-end
-
-function _chain(m, node, component, x::AbstractArray)
-    # println(node)
-    if length(node.parents) == 0
-        return x
-    end
-
-    return component([_chain(m, m.nodes[i], m.components[i], x) for i in node.op[2]]...)
-    # return _chain(m, m.nodes[i], m.components[i], component(x))
-end
-
-@generated function _apply_chain(layers::Tuple{Vararg{<:Any,N}}, x) where {N}
-    symbols = vcat(:x, [gensym() for _ in 1:N])
-    calls = [:($(symbols[i+1]) = layers[$i]($(symbols[i]))) for i in 1:N]
-    # println(symbols)
-    println(symbols,"\n",calls)
-    Expr(:block, calls...)
-  end
-
-# @eval function _apply_chain(layers::Tuple{Vararg{<:Any,N}}, nodes::Tuple{Vararg{<:Any,N}}, x) where {N}
-#     # println(m)
-#     symbols = vcat(:x, [gensym() for _ in 1:N])
-#     froms = [n.op[2] for n in nodes]
-
-#     # calls_from = [:($(froms[i]) = ((nodes[$i]).op[2])) for i in 1:N]
-#     # println(Expr(:block, calls_from...))
-#     # calls = [:($(symbols[i+1]) = layers[$i]((symbols[$(nodes[i])]))) for i in 1:N]
-#     # println(nodes[1].op[2])
-#     calls = [:($(symbols[i+1]) = layers[$i]($(symbols[(f...)]))) for (i, f, s) in zip(1:N, froms, symbols)]
-#     # println(calls)
-#     println(symbols,"\n",calls)
-#     eval(:(x = $x))
-#     eval(:(layers = $layers))
-#     eval(:(symbols = $symbols))
-#     eval.(calls)
-# end
-@generated function _apply_chain(layers::Tuple{Vararg{<:Any,N}}, nodes::Tuple{Vararg{<:Any,N}}, x) where {N}
-    quote
-        var"##312" = (layers[1])(x)
-        var"##313" = (layers[2])(var"##312")
-        var"##314" = (layers[3])(var"##313")
-        var"##315" = (layers[4])(var"##314")
-        var"##316" = (layers[5])(var"##315")
-        var"##317" = (layers[6])(var"##315")
-        var"##318" = (layers[7])(var"##317")
-        var"##319" = (layers[8])(var"##318")
-        var"##320" = (layers[9])(var"##319")
-        var"##321" = (layers[10])(var"##320")
-        var"##322" = (layers[11])(var"##321", var"##319", var"##317", var"##316")
-        var"##323" = (layers[12])(var"##322")
-        var"##324" = (layers[13])(var"##323")
-        var"##325" = (layers[14])(var"##324")
-        var"##326" = (layers[15])(var"##323")
-        var"##327" = (layers[16])(var"##326")
-        var"##328" = (layers[17])(var"##327", var"##325")
-        var"##329" = (layers[18])(var"##328")
-        var"##330" = (layers[19])(var"##328")
-        var"##331" = (layers[20])(var"##330")
-        var"##332" = (layers[21])(var"##331")
-        var"##333" = (layers[22])(var"##332")
-        var"##334" = (layers[23])(var"##333")
-        var"##335" = (layers[24])(var"##334", var"##332", var"##330", var"##329")
-        var"##336" = (layers[25])(var"##335")
-        var"##337" = (layers[26])(var"##336")
-        var"##338" = (layers[27])(var"##337")
-        var"##339" = (layers[28])(var"##336")
-        var"##340" = (layers[29])(var"##339")
-        var"##341" = (layers[30])(var"##340", var"##338")
-        var"##342" = (layers[31])(var"##341")
-        var"##343" = (layers[32])(var"##341")
-        var"##344" = (layers[33])(var"##343")
-        var"##345" = (layers[34])(var"##344")
-        var"##346" = (layers[35])(var"##345")
-        var"##347" = (layers[36])(var"##346")
-        var"##348" = (layers[37])(var"##347", var"##345", var"##343", var"##342")
-        var"##349" = (layers[38])(var"##348")
-        var"##350" = (layers[39])(var"##349")
-        var"##351" = (layers[40])(var"##350")
-        var"##352" = (layers[41])(var"##349")
-        var"##353" = (layers[42])(var"##352")
-        var"##354" = (layers[43])(var"##353", var"##351")
-        var"##355" = (layers[44])(var"##354")
-        var"##356" = (layers[45])(var"##354")
-        var"##357" = (layers[46])(var"##356")
-        var"##358" = (layers[47])(var"##357")
-        var"##359" = (layers[48])(var"##358")
-        var"##360" = (layers[49])(var"##359")
-        var"##361" = (layers[50])(var"##360", var"##358", var"##356", var"##355")
-        var"##362" = (layers[51])(var"##361")
-        var"##363" = (layers[52])(var"##362")
-        var"##364" = (layers[53])(var"##363")
-        var"##365" = (layers[54])(var"##364")
-        var"##366" = (layers[55])(var"##347")
-        var"##367" = (layers[56])(var"##366", var"##365")
-        var"##368" = (layers[57])(var"##367")
-        var"##369" = (layers[58])(var"##367")
-        var"##370" = (layers[59])(var"##369")
-        var"##371" = (layers[60])(var"##370")
-        var"##372" = (layers[61])(var"##371")
-        var"##373" = (layers[62])(var"##372")
-        var"##374" = (layers[63])(var"##373", var"##372", var"##371", var"##370", var"##369", var"##368")
-        var"##375" = (layers[64])(var"##374")
-        var"##376" = (layers[65])(var"##375")
-        var"##377" = (layers[66])(var"##376")
-        var"##378" = (layers[67])(var"##334")
-        var"##379" = (layers[68])(var"##378", var"##377")
-        var"##380" = (layers[69])(var"##379")
-        var"##381" = (layers[70])(var"##379")
-        var"##382" = (layers[71])(var"##381")
-        var"##383" = (layers[72])(var"##382")
-        var"##384" = (layers[73])(var"##383")
-        var"##385" = (layers[74])(var"##384")
-        var"##386" = (layers[75])(var"##385", var"##384", var"##383", var"##382", var"##381", var"##380")
-        var"##387" = (layers[76])(var"##386")
-        var"##388" = (layers[77])(var"##387")
-        var"##389" = (layers[78])(var"##388")
-        var"##390" = (layers[79])(var"##387")
-        var"##391" = (layers[80])(var"##390")
-        var"##392" = (layers[81])(var"##391", var"##389", var"##373")
-        var"##393" = (layers[82])(var"##392")
-        var"##394" = (layers[83])(var"##392")
-        var"##395" = (layers[84])(var"##394")
-        var"##396" = (layers[85])(var"##395")
-        var"##397" = (layers[86])(var"##396")
-        var"##398" = (layers[87])(var"##397")
-        var"##399" = (layers[88])(var"##398", var"##397", var"##396", var"##395", var"##394", var"##393")
-        var"##400" = (layers[89])(var"##399")
-        var"##401" = (layers[90])(var"##400")
-        var"##402" = (layers[91])(var"##401")
-        var"##403" = (layers[92])(var"##400")
-        var"##404" = (layers[93])(var"##403")
-        var"##405" = (layers[94])(var"##404", var"##402", var"##361")
-        var"##406" = (layers[95])(var"##405")
-        var"##407" = (layers[96])(var"##405")
-        var"##408" = (layers[97])(var"##407")
-        var"##409" = (layers[98])(var"##408")
-        var"##410" = (layers[99])(var"##409")
-        var"##411" = (layers[100])(var"##410")
-        var"##412" = (layers[101])(var"##411", var"##410", var"##409", var"##408", var"##407", var"##406")
-        var"##413" = (layers[102])(var"##412")
-        var"##414" = (layers[103])(var"##385")
-        var"##415" = (layers[104])(var"##398")
-        var"##416" = (layers[105])(var"##411")
-        var"##417" = (layers[106])(var"##416")
-        var"##418" = (layers[107])(var"##417")
-        var"##419" = (layers[108])(var"##418")
-    end
-end
-
-function _generate_chain(layers::Tuple{Vararg{<:Any,N}}, nodes::Tuple{Vararg{<:Array{Int64, 1},N}}, sizes::Tuple{Vararg{<:Array{Int64, M},N}}, x) where {N, M}
-    symbols = vcat(:x, [gensym() for _ in 1:N])
-    # froms = [n.op[2] for n in nodes]
-    froms = [gensym() for _ in 1:N]
-   
-    calls = []
-    for i in 1:N
-        if M == 1
-            q = :($(symbols[i+1]) = layers[$i]($(symbols[(nodes[i])]...)))
-            push!(calls, q)
-        else
-            q = :($(symbols[i+1]) = cat(([symbols$[(nodes[i][j]) for j in 1:M]]...); dims=3) )
-            push!(calls, q)
-        end
-    end
-    
-    # println(calls)
-    # println(symbols,"\n",aux_symbols,"\n",calls)
-    # eval(:(x = $x))
-    # eval(:(layers = $layers))
-    
-    # for e in calls
-    #     # println(e)
-    #     # eval(e)
-    # end
-    return Expr(:block, calls...)
-    # return x
-end
-
-# function _apply_chain(layers::Tuple{Vararg{<:Any,N}}, nodes::Tuple{Vararg{<:Any,N}}, x) where {N}
-#     # println(m)
-#     symbols = vcat(:x, [gensym() for _ in 1:N])
-#     froms = [:((nodes[$i].op[2])) for i in 1:N]
-#     println("after froms")
-#     # symbols = [:x]
-#     aux_symbols = []
-#     for i in 1:N
-#         if length(froms[i]) > 1
-#             push!(aux_symbols, [gensym() for _ in 1:length(froms[i])]...)
-#         end
-#     end
-    
-#     eval(:(symbols = $symbols))
-#     eval(:(aux_symbols = $aux_symbols))
-
-#     # calls_from = [:($(froms[i]) = ((nodes[$i]).op[2])) for i in 1:N]
-#     # println(Expr(:block, calls_from...))
-#     # calls = [:($(symbols[i+1]) = layers[$i]((symbols[$(nodes[i])]))) for i in 1:N]
-#     # println(nodes[1].op[2])
-#     # calls = [:($(symbols[i+1]) = length($f) == 1 ? layers[$i]($(symbols[(f)])) : layers[$i](($symbols[$(g for g in f)]))) for (i, f) in zip(1:N, froms)]
-#     # calls = [:($(symbols[i+1]) = length($(froms[i])) == 1 ? layers[$i]($(symbols[(froms[i])])) : layers[$i]($(symbols[froms[i]]))) for i in 1:N]
-#     calls = []
-#     k = 1
-#     for i in 1:N
-#         if length(froms[i]) == 1
-#             q = :($(symbols[i+1]) = layers[$i]($(symbols[(froms[i])])))
-#             push!(calls, q)
-#         else
-#             M = length(froms[i])
-#             q = :($(aux_symbols[k]) = $(symbols[(froms[i][1])]))
-#             push!(calls, q)
-#             k += 1
-#             for j in 2:M
-#                 :(k = 1)
-#                 q = :($(aux_symbols[k]) = cat(($(aux_symbols[k-1]), $(symbols[(froms[i][j])]))...; dims=3))
-#                 push!(calls, q)
-#                 k += 1
-#             end
-#             q = :($(symbols[i+1]) = $(aux_symbols[k-1]))
-#             push!(calls, q)
-#         end
-#     end
-    
-#     # println(calls)
-#     # println(symbols,"\n",aux_symbols,"\n",calls)
-#     eval(:(x = $x))
-#     eval(:(layers = $layers))
-    
-#     for e in calls
-#         # println(e)
-#         # eval(e)
-#     end
-#     Expr(:block, calls...)
-#     # return x
-# end
-
-function _applychain(m::YOLOChain, x::AbstractArray)
-    # fs = m.nodes[1]
-    # cs = m.components[1]
-    # push!(results, cs(x))
-    return _chain(m, m.nodes[end], m.components[end], x)
-
-    # for (i, (node, component)) in enumerate(zip(m.nodes, m.components))
-    #     if length(node.parents) == 0
-    #         m.results[i] = x
-    #     else
-    #         if length(node.parents) != 1 || node.parents[1] != -1
-    #             x = m.results[node.op[2]]
-    #         end
-    #         # println(node)
-    #         # println(component)
-    #         # println(node.op[2])
-    #         # println(size(results[node.op[2][1]]))
-    #         x = component(x...)
-    #         m.results[i] = x
-    #     end
-    #     # println(length(results))
-    # end
-
-    # return x
-end
-
 struct Conv
     conv::Flux.Conv
     bn::Union{Flux.BatchNorm, typeof(identity)}
@@ -358,7 +23,7 @@ Conv(conv::Flux.Conv, bn::typeof(identity)) = Conv(conv, bn, silu)
 
 function Conv(c::Pair{Int64, Int64}, kernel, stride)
     return Conv(
-        Flux.Conv((kernel, kernel), c; stride=stride, pad=Flux.SamePad()),
+        Flux.Conv((kernel, kernel), c; stride=stride, pad=Flux.SamePad(), bias=false),
         Flux.BatchNorm(c.second)
     )
 end
@@ -972,9 +637,9 @@ struct ImplicitAddition
     w
 end
 
-function ImplicitAddition(depth::Int; mean=0.0, std=0.02, device=gpu)
+function ImplicitAddition(depth::Int; mean=0.0, std=0.02)
     d = Normal(mean, std)
-    w = Float32.(rand(d, 1, 1, depth, 1)) |> device
+    w = Float32.(rand(d, 1, 1, depth, 1))
 
     return ImplicitAddition(w)
 end
@@ -989,9 +654,9 @@ struct ImplicitMultiplication
     w
 end
 
-function ImplicitMultiplication(depth::Int; mean=0.0, std=0.02, device=gpu)
+function ImplicitMultiplication(depth::Int; mean=0.0, std=0.02)
     d = Normal(mean, std)
-    w = Float32.(rand(d, 1, 1, depth, 1)) |> device
+    w = Float32.(rand(d, 1, 1, depth, 1))
 
     return ImplicitMultiplication(w)
 end
@@ -1055,7 +720,7 @@ function IDetec(d::OrderedDict{Any, Any})
     d["105"]
 end
 
-function (m::IDetec)(x::Vector{CuArray{Float32, 4, CUDA.Mem.DeviceBuffer}})
+function (m::IDetec)(x::AbstractArray)
     # z = []
     # println(typeof(x))
     # println(size(x))
