@@ -12,8 +12,7 @@ include("utils/nms.jl")
 
 include("model/yolo.jl")
 
-export yolov7
-export yolov7_from_torch
-export fuse
+export yolov7, yolov7_from_torch, fuse
+export output_to_box, non_max_suppression
 
 end # module

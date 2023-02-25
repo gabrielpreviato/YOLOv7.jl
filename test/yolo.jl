@@ -1,12 +1,14 @@
 using YOLOv7
 
 using Flux
+using Images
+using MLUtils
 using Test
 
 @testset "yolov7" begin
-    msg = """The GPU function is being called but the GPU is not accessible. 
-            Defaulting back to the CPU. (No action is required if you want to run on the CPU)."""
-    @test_logs (:info, msg) yolov7()
+    # msg = """The GPU function is being called but the GPU is not accessible. 
+    #         Defaulting back to the CPU. (No action is required if you want to run on the CPU)."""
+    # @test_logs (:info, msg) yolov7()
     @test_nowarn yolov7(name="yolo test", nc=2, class_names=["car", "ball"])
     
     # Usage of non-default anchors
@@ -38,7 +40,7 @@ end
     model = yolov7_from_torch()
     m = model.m
 
-    x = float.(Images.load.(["horses.jpg"]))
+    x = float.(Images.load.(["$(@__DIR__)/images/horses.jpg"]))
     x = imresize.(x, 640, 640)
     x = channelview.(x)
     x = permutedims.(x, ((3, 2, 1),))
@@ -46,15 +48,15 @@ end
 
     ŷ = m(x)
 
-    out = output_to_box(ŷ, anchor_grid, strid)
+    out = output_to_box(ŷ, model.anchor_grid, model.strid)
     out_nms = non_max_suppression([out]; nc=80)[1]
 end
 
 @testset "Pretrained fused yolov7" begin
-    model = yolov7_from_torch()
-    fm = fuse(model.m)
+    fused_model = fuse(yolov7_from_torch())
+    fm = fused_model.m
 
-    x = float.(Images.load.(["horses.jpg"]))
+    x = float.(Images.load.(["$(@__DIR__)/images/horses.jpg"]))
     x = imresize.(x, 640, 640)
     x = channelview.(x)
     x = permutedims.(x, ((3, 2, 1),))
@@ -62,6 +64,6 @@ end
 
     fŷ = fm(x)
 
-    out = output_to_box(fŷ, anchor_grid, strid)
+    out = output_to_box(fŷ, fused_model.anchor_grid, fused_model.strid)
     out_nms = non_max_suppression([out]; nc=80)[1]
 end
