@@ -33,3 +33,35 @@ end
     
     @test_throws SystemError yolov7_from_torch(name="yolo test", pickle_path="")
 end
+
+@testset "Pretrained non-fused yolov7" begin
+    model = yolov7_from_torch()
+    m = model.m
+
+    x = float.(Images.load.(["horses.jpg"]))
+    x = imresize.(x, 640, 640)
+    x = channelview.(x)
+    x = permutedims.(x, ((3, 2, 1),))
+    x = stack(x, dims=4)
+
+    ŷ = m(x)
+
+    out = output_to_box(ŷ, anchor_grid, strid)
+    out_nms = non_max_suppression([out]; nc=80)[1]
+end
+
+@testset "Pretrained fused yolov7" begin
+    model = yolov7_from_torch()
+    fm = fuse(model.m)
+
+    x = float.(Images.load.(["horses.jpg"]))
+    x = imresize.(x, 640, 640)
+    x = channelview.(x)
+    x = permutedims.(x, ((3, 2, 1),))
+    x = stack(x, dims=4)
+
+    fŷ = fm(x)
+
+    out = output_to_box(fŷ, anchor_grid, strid)
+    out_nms = non_max_suppression([out]; nc=80)[1]
+end

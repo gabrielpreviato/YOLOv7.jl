@@ -8,6 +8,7 @@ include("utils/parser.jl")
 include("utils/dataset.jl")
 include("utils/gradient.jl")
 include("utils/pickle.jl")
+include("utils/nms.jl")
 
 include("model/yolo.jl")
 
