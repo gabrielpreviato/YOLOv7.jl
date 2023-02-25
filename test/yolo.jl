@@ -1,9 +1,12 @@
 using YOLOv7
 
+using Flux
 using Test
 
 @testset "yolov7" begin
-    @test_nowarn yolov7()
+    msg = """The GPU function is being called but the GPU is not accessible. 
+            Defaulting back to the CPU. (No action is required if you want to run on the CPU)."""
+    @test_logs (:info, msg) yolov7()
     @test_nowarn yolov7(name="yolo test", nc=2, class_names=["car", "ball"])
     
     # Usage of non-default anchors
