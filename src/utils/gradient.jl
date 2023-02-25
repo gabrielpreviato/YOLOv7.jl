@@ -1,6 +1,6 @@
 using Zygote
 
-function Zygote.withgradient(f, args...)
+function withgradient(f, args...)
     y_a, back = pullback(f, args...)
     y = y_a[1]
     s = Zygote.sensitivity(y)

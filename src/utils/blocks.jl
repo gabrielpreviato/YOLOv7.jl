@@ -637,9 +637,9 @@ struct ImplicitAddition
     w
 end
 
-function ImplicitAddition(depth::Int; mean=0.0, std=0.02, device=gpu)
+function ImplicitAddition(depth::Int; mean=0.0, std=0.02)
     d = Normal(mean, std)
-    w = Float32.(rand(d, 1, 1, depth, 1)) |> device
+    w = Float32.(rand(d, 1, 1, depth, 1))
 
     return ImplicitAddition(w)
 end
@@ -654,9 +654,9 @@ struct ImplicitMultiplication
     w
 end
 
-function ImplicitMultiplication(depth::Int; mean=0.0, std=0.02, device=gpu)
+function ImplicitMultiplication(depth::Int; mean=0.0, std=0.02)
     d = Normal(mean, std)
-    w = Float32.(rand(d, 1, 1, depth, 1)) |> device
+    w = Float32.(rand(d, 1, 1, depth, 1))
 
     return ImplicitMultiplication(w)
 end
@@ -720,7 +720,7 @@ function IDetec(d::OrderedDict{Any, Any})
     d["105"]
 end
 
-function (m::IDetec)(x::Vector{CuArray{Float32, 4, CUDA.Mem.DeviceBuffer}})
+function (m::IDetec)(x::AbstractArray)
     # z = []
     # println(typeof(x))
     # println(size(x))

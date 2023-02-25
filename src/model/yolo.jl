@@ -4,6 +4,10 @@ struct yolov7
     name::String
     pretrained::Bool
     class_names
+    anchor_grid
+    anchors
+    nc
+    strid
     m
 end
 
@@ -13,7 +17,7 @@ function fuse(m::yolov7)
         push!(layers, fuse(layer))
     end
 
-    return yolov7(m.name, m.pretrained, m.class_names, Chain(layers))
+    return yolov7(m.name, m.pretrained, m.class_names, m.anchor_grid, m.anchors, m.nc, m.strid, Chain(layers))
 end
 
 function yolov7(;name="yolov7", nc=1, class_names=["obstacle"], anchor_grid=(), anchors=())
@@ -36,7 +40,7 @@ function yolov7(;name="yolov7", nc=1, class_names=["obstacle"], anchor_grid=(), 
         YOLOv7.IDetec(nc; channels=(256, 512, 1024), anchors=anchors, anchor_grid=anchor_grid),
     )
 
-    return yolov7(name, false, class_names, model)
+    return yolov7(name, false, class_names, anchor_grid, anchors, nc, [8, 16, 32], model)
 end
 
 function yolov7_from_torch(;name="yolov7", pickle_path="$(@__DIR__)/../../pretrain/yolov7_training.pt", nc=80, class_names=[], anchors=(), anchor_grid=(), channels=())
@@ -67,7 +71,7 @@ function yolov7_from_torch(;name="yolov7", pickle_path="$(@__DIR__)/../../pretra
         keep_head ? YOLOv7.IDetec(d) : YOLOv7.IDetec(nc; anchors=anchors, anchor_grid=anchor_grid, channels=channels),
     )
 
-    return yolov7(name, true, class_names, model)
+    return yolov7(name, true, class_names, anchor_grid, anchors, nc, [8, 16, 32], model)
 end
 
 function load_anchors_and_grid(anchors, anchor_grid)
