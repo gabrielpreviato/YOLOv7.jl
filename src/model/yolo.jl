@@ -39,7 +39,7 @@ function yolov7(;name="yolov7", nc=1, class_names=["obstacle"], anchor_grid=(), 
     return yolov7(name, false, class_names, model)
 end
 
-function yolov7_from_torch(;name="yolov7", pickle_path="pretrain/yolov7_training.pt", nc=80, class_names=[], anchors=(), anchor_grid=(), channels=())
+function yolov7_from_torch(;name="yolov7", pickle_path="$(@__DIR__)/../../pretrain/yolov7_training.pt", nc=80, class_names=[], anchors=(), anchor_grid=(), channels=())
     d::OrderedDict, class_names_model, nc_model = load_pickle(pickle_path)
 
     keep_head = false
