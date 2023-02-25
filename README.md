@@ -1,5 +1,5 @@
 # YOLOv7.jl
-[![Codecov](https://github.com/gabrielpreviato/YOLOv7.jl/lcov.info)]
+[![codecov](https://codecov.io/gh/gabrielpreviato/YOLOv7.jl/branch/main/graph/badge.svg?token=N1RL2BTV4C)](https://codecov.io/gh/gabrielpreviato/YOLOv7.jl)
 
 This package is a Julia version of the YOLOv7 model based on the [original author implementation in PyTorch](https://github.com/WongKinYiu/yolov7).
 
