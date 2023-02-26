@@ -8,16 +8,16 @@ function get_pickle_conv(d::Dict{Any, Any})
     groups = d["groups"]
     dilation = d["dilation"]
 
-    weight = Float32.(d["_parameters"]["weight"].args[2])
+    weight = convert(Array{Float32, 4}, d["_parameters"]["weight"].args[2])
     rev_weight = flip(permutedims(weight, ndims(weight):-1:1))
-    bias = Float32.(d["_parameters"]["bias"] === nothing ? false : d["_parameters"]["bias"].args[2])
+    bias = d["_parameters"]["bias"] === nothing ? false :  Float32.(d["_parameters"]["bias"].args[2])
 
     Flux.Conv(identity, rev_weight, bias, stride, pad, dilation, groups)
 end
 
 function get_pickle_bn(d::Dict{Any, Any})
-    ϵ = d["eps"]
-    momentum = d["momentum"]
+    ϵ = Float32.(d["eps"])
+    momentum = Float32.(d["momentum"])
     γ = Float32.(d["_parameters"]["weight"].args[2])
     β = Float32.(d["_parameters"]["bias"].args[2])
     μ = Float32.(d["_buffers"]["running_mean"])

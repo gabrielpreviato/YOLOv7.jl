@@ -3,6 +3,36 @@ using MLUtils
 using JSON
 using Flux
 
+function reshape_image(x, new_size=(640, 640), scaleup=true, stride=32)
+    r = minimum(new_size ./ size(x))
+    if !scaleup
+        r = min(1, r)
+    end
+
+    new_unpad = Int.(round.(size(x) .* r))
+    println(new_unpad)
+    dw, dh = new_size[1] - new_unpad[1], new_size[2] - new_unpad[2] 
+
+    println(dw, " ", dh)
+
+    dw, dh = dw % stride, dh % stride
+
+    println(dw, " ", dh)
+
+    dw, dh = dw / 2, dh / 2
+
+    println(dw, " ", dh)
+
+    if size(x) !== new_unpad
+        x = imresize(x, new_unpad)
+    end
+    top, bottom = Int(round(dw - 0.1)), Int(round(dw + 0.1))
+    left, right = Int(round(dh - 0.1)), Int(round(dh + 0.1))
+    x = pad_constant(x, (top, bottom, left, right), RGB{Float32}(0.5f0,0.5f0,0.5f0))
+end
+
+
+
 struct ImageDataset
     mapping::Dict{String, Int}
     dataset_path::String
@@ -71,7 +101,7 @@ end
 
 function MLUtils.getobs(data::ImageDataset, idxs::Union{UnitRange{Int64}, Vector{Int64}})
     x = float.(Images.load.(data.image_files[idxs]))
-    x = imresize.(x, 320, 320)
+    x = reshape_image.(x)
     x = channelview.(x)
     x = permutedims.(x, ((3, 2, 1),))
     x = stack(x, dims=4)

@@ -23,7 +23,7 @@ Conv(conv::Flux.Conv, bn::typeof(identity)) = Conv(conv, bn, silu)
 
 function Conv(c::Pair{Int64, Int64}, kernel, stride)
     return Conv(
-        Flux.Conv((kernel, kernel), c; stride=stride, pad=Flux.SamePad()),
+        Flux.Conv((kernel, kernel), c; stride=stride, pad=Flux.SamePad(), bias=false),
         Flux.BatchNorm(c.second)
     )
 end
