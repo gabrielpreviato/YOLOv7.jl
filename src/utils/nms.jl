@@ -7,9 +7,12 @@ function output_to_box(ŷ, anchors_grid, stride)
         bs = size(ŷ_i)[end]
         no = size(ŷ_i)[1]
         
+        # grid = reshape(
+        #     stack([((0:xs-1)' .* ones(ys))', ((0:ys-1)' .* ones(xs))]; dims=1),
+        #     (2, ys, xs, 1, 1))
         grid = reshape(
             stack([((0:xs-1)' .* ones(ys))', ((0:ys-1)' .* ones(xs))]; dims=1),
-            (2, ys, xs, 1, 1))
+            (2, xs, ys, 1, 1))
 
         sig = sigmoid(ŷ_i) |> cpu
 
