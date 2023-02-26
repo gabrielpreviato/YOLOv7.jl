@@ -12,7 +12,10 @@ include("utils/nms.jl")
 
 include("model/yolo.jl")
 
+include("image/text_render.jl")
+
 export yolov7, yolov7_from_torch, fuse
 export output_to_box, non_max_suppression
+export reshape_image
 
 end # module
