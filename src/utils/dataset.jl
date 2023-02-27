@@ -10,18 +10,10 @@ function reshape_image(x, new_size=(640, 640), scaleup=true, stride=32)
     end
 
     new_unpad = Int.(round.(size(x) .* r))
-    println(new_unpad)
+    
     dw, dh = new_size[1] - new_unpad[1], new_size[2] - new_unpad[2] 
-
-    println(dw, " ", dh)
-
     dw, dh = dw % stride, dh % stride
-
-    println(dw, " ", dh)
-
     dw, dh = dw / 2, dh / 2
-
-    println(dw, " ", dh)
 
     if size(x) !== new_unpad
         x = imresize(x, new_unpad)
@@ -29,6 +21,8 @@ function reshape_image(x, new_size=(640, 640), scaleup=true, stride=32)
     top, bottom = Int(round(dw - 0.1)), Int(round(dw + 0.1))
     left, right = Int(round(dh - 0.1)), Int(round(dh + 0.1))
     x = pad_constant(x, (top, bottom, left, right), RGB{Float32}(0.5f0,0.5f0,0.5f0))
+
+    return r, dw, dh, x
 end
 
 
