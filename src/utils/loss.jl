@@ -88,7 +88,7 @@ function build_targets(compute_loss::ComputeLoss, ŷ, y; device=gpu)
     
     ret = Zygote.@ignore [
         let
-            anchors = compute_loss.anchors[i] |> device
+            anchors = compute_loss.anchors[i, :, :] |> device
 
             # Zygote.@showgrad(anchors)
             # println("size(anchors) ", size(anchors))
@@ -270,6 +270,8 @@ function build_targets(compute_loss::ComputeLoss, ŷ, y; device=gpu)
     return tcls, tbox, indices, anch
 end
 
+Zygote.@nograd build_targets
+
 function bbox_iou(box1, box2; x1y1x2y2=true, GIoU=false, DIoU=false, CIoU=false, eps=Float32(1e-5))
     # println("size(box1)", size(box1), typeof(box1))
     # println("size(box2)", size(box2), typeof(box2))
@@ -382,14 +384,12 @@ function loss(compute_loss::ComputeLoss, ŷ, y, bs; device=gpu, nc=5, cn=0.0f0,
 
                 id = Matrix(cp*I, nc, nc) |> device
                 # println("size(t) ", size(t))
-                # println(tcls[i])
                 # t[1:n, tcls[i]] .= cp
 
-                t = reduce(hcat, [
+                t = Zygote.@ignore reduce(hcat, [
                     CUDA.@allowscalar id[:, tcls[i][j]]
                     for j in 1:n
                 ])
-
 
                 lcls += compute_loss.BCEclass(ps[6:end, :], t)
             end
@@ -407,5 +407,5 @@ function loss(compute_loss::ComputeLoss, ŷ, y, bs; device=gpu, nc=5, cn=0.0f0,
     lcls *= compute_loss.hyper["cls"]
 
     loss = lbox + lobj + lcls
-    return loss * bs , Zygote.@ignore [lbox, lobj, lcls, loss]
+    return loss * bs, Zygote.@ignore [lbox, lobj, lcls, loss]
 end
