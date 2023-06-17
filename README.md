@@ -11,6 +11,7 @@ This package is a Julia version of the YOLOv7 model based on the [original autho
 
 There is still some things to be done, collaboration is appreciated from anyone.
 
+- [ ] Compare with Python YOLOv7
 - [ ] Add basic training loop
 - [ ] Add data loading
 - [ ] Add data preprocessing and augumentation
